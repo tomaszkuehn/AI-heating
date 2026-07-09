@@ -24,6 +24,12 @@ void notification_send_alert(const notify_cfg_t *cfg, fault_class_t f,
  * string the caller must free(), or NULL on immediate failure. */
 char *notification_test_email(const notify_cfg_t *cfg);
 
+/* Send a restart notification 60s after boot: detailed email + short SMS.
+ * Safe to call when neither email nor SMS is configured (no-op). */
+void notification_send_restart(const notify_cfg_t *cfg, const char *device_name,
+    float sys_temp, float ext_temp, int healthy, int total,
+    const sensor_t *sensors, int sensor_count);
+
 #ifdef __cplusplus
 }
 #endif

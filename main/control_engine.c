@@ -5,6 +5,7 @@
 #include "fault_manager.h"
 #include "simulation_manager.h"
 #include "storage_manager.h"
+#include "notification_manager.h"
 #include "profile.h"
 
 #include <string.h>
@@ -296,6 +297,24 @@ void control_tick(int dt_ms)
                                   ? s_cfg->sensors[i].last_effective : he_nan();
             }
             storage_record_minute(&m);
+        }
+    }
+
+    /* Restart notification: once, 60s after boot, send email + SMS with
+     * device name and current system status. Gated on network up to avoid
+     * spurious send attempts while Wi-Fi is still connecting. */
+    {
+        static bool s_restart_notified = false;
+        static int  s_restart_age_s   = 0;
+        s_restart_age_s += sdt / 1000;
+        if (!s_restart_notified && s_restart_age_s >= 60) {
+            s_restart_notified = true;
+            if (fault_manager_network_up() &&
+                (s_cfg->notify.email_enabled || s_cfg->notify.sms_enabled)) {
+                notification_send_restart(&s_cfg->notify,
+                    s_cfg->device_name, sys_temp, ext_temp,
+                    healthy, total, s_cfg->sensors, s_cfg->sensor_count);
+            }
         }
     }
 }

@@ -25,6 +25,30 @@ function fmtUp(ms) {
  * themselves" bug). */
 function renderDashboard(s) {
   lastState = s;
+  /* Device name — click to edit inline. Set up once. */
+  const dn = $('devName');
+  if (dn && s.device_name && !dn._init) {
+    dn._init = true;
+    dn.textContent = s.device_name;
+    dn.onclick = function () {
+      const old = dn.textContent;
+      const inp = document.createElement('input');
+      inp.value = old;
+      inp.style.cssText = 'font-size:16px;font-weight:700;background:#11151d;border:1px solid #262b35;color:#e7ecf3;border-radius:6px;padding:2px 6px;width:200px';
+      inp.onblur = function () {
+        var v = inp.value.trim();
+        if (v) { dn.textContent = v; post('/api/device', {name: v}, true); }
+        else dn.textContent = old;
+      };
+      inp.onkeydown = function (e) {
+        if (e.key === 'Enter') inp.blur();
+        if (e.key === 'Escape') { dn.textContent = old; }
+      };
+      dn.textContent = '';
+      dn.appendChild(inp);
+      inp.focus();
+    };
+  }
   const hlth = $('healthMark'), stt = $('stateMark');
   hlth.className = 'mark ' + (s.health ? 'mark-ok' : 'mark-bad');
   hlth.textContent = s.health ? '● Zdrowy' : '● Problem';

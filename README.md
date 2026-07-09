@@ -135,12 +135,25 @@ Jednostronicowa aplikacja (bez zależności) serwowana z firmware:
 - **Responsywność** — na urządzeniach mobilnych tabela czujników przewija się
   poziomo (nie wychodzi poza kartę), siatka kafelków dashboardu zwija się do
   2 kolumn, a wykresy dopasowują szerokość do ekranu.
-- **Pulpit** — nagłówek panelu zawiera tytuł, **zegar systemowy** (HH:MM:SS
+- **Pulpit** — nagłówek panelu zawiera **klikalną nazwę urządzenia**
+  (edycja inline, zapis w NVS), **zegar systemowy** (HH:MM:SS
   z czasu SNTP lub wirtualnego), wskaźnik zdrowia systemu, stan automatu,
   adres IP urządzenia i status synchronizacji czasu (🕐 zielony = SNTP,
   żółty = lokalny). Kafelki pokazują: temperatury, liczbę sprawnych
   czujników, uptime, zużycie flash, czas grzania w oknie (24h/zoom) i status
   pieca.
+- **Powiadomienie po restarcie** — 60 sekund po uruchomieniu (gdy Wi-Fi już
+  działa) wysyłane jest jednorazowe powiadomienie:
+  - **E-mail** — szczegółowy raport: nazwa urządzenia, temperatury systemowa
+    i zewnętrzna, liczba sprawnych czujników, stan każdego czujnika
+    (nazwa, jakość, temperatura efektywna).
+  - **SMS** — krótka wiadomość `[nazwa] RESTART`.
+  Wysyłka tylko gdy skonfigurowany e-mail (`email_enabled`) i/lub SMS
+  (`sms_enabled`). Konfiguracja w karcie „Powiadomienia".
+- **Nazwa urządzenia** konfigurowalna przez kliknięcie tytułu w nagłówku
+  dashboardu lub przez `POST /api/device {"name":"..."}`. Domyślnie
+  „Sterownik CO". Przetrzymuje restart (NVS). Używana w temacie i treści
+  powiadomień restartowych.
 - **Status pieca** — kafelek z dużym kołem:
   - 🔥 **czerwone koło + płomień** = grzanie aktywne, podpis „Grzeje"
   - 🔵 **niebieskie koło** = grzanie włączone, ale nie grzeje, podpis „Nie grzeje"

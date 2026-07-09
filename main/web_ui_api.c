@@ -256,7 +256,7 @@ static esp_err_t h_state(httpd_req_t *req)
     p += snprintf(b + p, sizeof(b) - p,
         "\"profile\":%s,\"pump\":{\"enabled\":%s,\"impulse\":%d,\"period\":%d,\"total\":%d},"
         "\"emergency\":{\"enabled\":%s,\"on\":%d,\"period\":%d},"
-        "\"sim_sensors\":%s,\"sim_heating\":%s,\"sim_accel\":%s}",
+        "\"sim_sensors\":%s,\"sim_heating\":%s,\"sim_accel\":%s,\"device_name\":\"%s\"}",
         prof,
         s_cfg->pump.enabled ? "true" : "false", s_cfg->pump.impulse_seconds,
         s_cfg->pump.period_seconds, s_cfg->pump.total_seconds,
@@ -264,7 +264,8 @@ static esp_err_t h_state(httpd_req_t *req)
         s_cfg->emergency.period_seconds,
         s_cfg->simulate_sensors ? "true" : "false",
         s_cfg->simulate_heating ? "true" : "false",
-        s_cfg->sim_time_accel ? "true" : "false");
+        s_cfg->sim_time_accel ? "true" : "false",
+        s_cfg->device_name[0] ? s_cfg->device_name : "Sterownik CO");
     CFG_RET(send_json(req, b));
 }
 
@@ -389,6 +390,22 @@ static esp_err_t h_heating(httpd_req_t *req)
 {
     char d[8]; if (qarg(req, "disable", d, sizeof(d))) { CFG_LOCK(); control_set_heating_disabled(atoi(d) == 1); he_config_unlock(); }
     return send_text(req, "ok", 200);
+}
+
+/* ---- /api/device (POST) ---- */
+static esp_err_t h_device(httpd_req_t *req)
+{
+    char body[64]; read_body(req, body, sizeof(body));
+    char name[32];
+    if (json_str(body, "name", name, sizeof(name))) {
+        CFG_LOCK();
+        strncpy(s_cfg->device_name, name, sizeof(s_cfg->device_name) - 1);
+        s_cfg->device_name[sizeof(s_cfg->device_name) - 1] = '\0';
+        storage_save_config(s_cfg);
+        he_config_unlock();
+        return send_text(req, "ok", 200);
+    }
+    return send_text(req, "missing name", 400);
 }
 
 /* ---- /api/pump (POST) ---- */
@@ -680,6 +697,7 @@ static httpd_uri_t regs[] = {
     { .uri = "/api/sensors/count", .method = HTTP_POST, .handler = h_sensors_count, .user_ctx = NULL },
     { .uri = "/api/boost",   .method = HTTP_POST, .handler = h_boost,        .user_ctx = NULL },
     { .uri = "/api/heating", .method = HTTP_POST, .handler = h_heating,      .user_ctx = NULL },
+    { .uri = "/api/device",  .method = HTTP_POST, .handler = h_device,       .user_ctx = NULL },
     { .uri = "/api/pump",    .method = HTTP_POST, .handler = h_pump,         .user_ctx = NULL },
     { .uri = "/api/emergency", .method = HTTP_POST, .handler = h_emergency,  .user_ctx = NULL },
     { .uri = "/api/notify",  .method = HTTP_POST, .handler = h_notify,       .user_ctx = NULL },

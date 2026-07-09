@@ -218,6 +218,65 @@ void notification_send_alert(const notify_cfg_t *cfg, fault_class_t f,
     }
 }
 
+void notification_send_restart(const notify_cfg_t *cfg, const char *device_name,
+    float sys_temp, float ext_temp, int healthy, int total,
+    const sensor_t *sensors, int sensor_count)
+{
+    if (!cfg || !device_name) return;
+    if (!cfg->email_enabled && !cfg->sms_enabled) return;
+
+    char subject[64];
+    snprintf(subject, sizeof(subject), "[%s] RESTART", device_name);
+
+    /* Email body with detailed system status. */
+    char body[512];
+    int pos = 0;
+    pos += snprintf(body + pos, sizeof(body) - pos,
+        "Urzadzenie: %s\r\n"
+        "Temp. systemowa: %.2f C\r\n"
+        "Temp. zewnetrzna: %s\r\n"
+        "Czujniki OK: %d/%d\r\n"
+        "\r\n",
+        device_name,
+        he_isnan(sys_temp) ? -99.0f : sys_temp,
+        he_isnan(ext_temp) ? "--" : "",
+        healthy, total);
+    if (pos < 0) pos = 0;
+    if (!he_isnan(ext_temp)) {
+        pos += snprintf(body + pos, sizeof(body) - pos,
+            "                        %.2f C\r\n", ext_temp);
+    }
+    for (int i = 0; i < sensor_count && pos + 64 < (int)sizeof(body); i++) {
+        const sensor_t *s = &sensors[i];
+        const char *qname = "?";
+        switch (s->quality) {
+        case QUAL_OK: qname = "OK"; break;
+        case QUAL_TIMEOUT: qname = "TIMEOUT"; break;
+        case QUAL_OUT_OF_RANGE: qname = "OUT_OF_RANGE"; break;
+        case QUAL_STALE: qname = "STALE"; break;
+        case QUAL_WINDOW_OPEN: qname = "WINDOW_OPEN"; break;
+        case QUAL_DISABLED: qname = "DISABLED"; break;
+        case QUAL_SIMULATED: qname = "SIMULATED"; break;
+        }
+        pos += snprintf(body + pos, sizeof(body) - pos,
+            "Czujnik %d (%s): %s, %.2f C\r\n",
+            s->id, s->name[0] ? s->name : "?", qname,
+            he_isnan(s->last_effective) ? -99.0f : s->last_effective);
+    }
+
+    if (cfg->email_enabled && cfg->email_to[0]) {
+        s_diag[0] = '\0'; s_diag_len = 0;
+        if (!smtp_send(cfg, subject, body))
+            ESP_LOGW(TAG, "restart email failed");
+    }
+    if (cfg->sms_enabled && cfg->sms_phone[0]) {
+        char sms_msg[64];
+        snprintf(sms_msg, sizeof(sms_msg), "[%s] RESTART", device_name);
+        if (!sms_send(cfg, sms_msg))
+            ESP_LOGW(TAG, "restart sms failed");
+    }
+}
+
 char *notification_test_email(const notify_cfg_t *cfg)
 {
     if (!cfg || !cfg->smtp_host[0]) return strdup("FAIL: brak serwera SMTP w konfiguracji");

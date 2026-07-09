@@ -43,6 +43,8 @@ typedef struct {
     bool                simulate_heating;
     bool                sim_time_accel;              /* x10 virtual clock in sim */
     bool                heating_disabled;            /* manual kill switch */
+    /* device identity */
+    char                device_name[32];             /* user-configurable system name */
     /* protection limits (configurable via /api/limits) */
     int                 fault_grace_sec;             /* NO_HEAT_RISE grace (default 300 = 5 min) */
     int                 max_on_sec;                  /* max continuous heating (default 14400 = 4 h) */

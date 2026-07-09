@@ -63,6 +63,7 @@ static void seed_defaults(system_config_t *c)
     c->fault_grace_sec = 300;
     c->max_on_sec = 14400;
     c->max_on_break_sec = 600;
+    strncpy(c->device_name, "Sterownik CO", sizeof(c->device_name) - 1);
     c->wifi_sta_mode = false;
     strncpy(c->wifi_ssid, HE_DEFAULT_AP_SSID, sizeof(c->wifi_ssid) - 1);
     strncpy(c->wifi_pass, HE_DEFAULT_AP_PASS, sizeof(c->wifi_pass) - 1);
