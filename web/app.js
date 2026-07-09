@@ -240,8 +240,8 @@ function renderProfile(p) {
   (p || []).forEach((h, idx) => {
     const d = document.createElement('div'); d.className = 'ph';
     d.innerHTML = `<div class="h">${idx}:00</div>
-      <input data-h="${idx}" data-k="on" placeholder="ON" value="${h[0]}">
-      <input data-h="${idx}" data-k="off" placeholder="OFF" value="${h[1]}">`;
+      <input data-h="${idx}" data-k="off" placeholder="OFF" value="${h[1]}">
+      <input data-h="${idx}" data-k="on" placeholder="ON" value="${h[0]}">`;
     d.querySelectorAll('input').forEach(i => i.oninput = () => profileEdited = true);
     g.appendChild(d);
   });
@@ -643,8 +643,55 @@ $('btnNotifyTest').onclick = async () => {
 $('btnSimHeat').onclick = () => post('/api/sim/heating', { enabled: $('simHeat').checked, mixed: $('simMixed').checked, accel: $('simAccel').checked, mode: +$('simMode').value, heat_rate: +$('simHR').value, cool_rate: +$('simCR').value, inertia: +$('simIn').value }, true).then(() => refresh()).then(load24h);
 $('btnSimSen').onclick = () => post('/api/sim/sensor?id=' + $('simSenId').value, { src: +$('simSenSrc').value, base: +$('simSenBase').value, rate: 0.1, target: 0 }, true).then(() => refresh()).then(load24h);
 $('btnProfileApply').onclick = () => { profileEdited = false; post('/api/profile', collectProfile(), true).then(() => refresh()); };
-$('btnProfileFileSave').onclick = () => { post('/api/profile/file?name=' + encodeURIComponent($('profileName').value || 'default') + '&op=save', '').then(() => refresh()); };
-$('btnProfileFileLoad').onclick = () => { profileEdited = false; post('/api/profile/file?name=' + encodeURIComponent($('profileName').value || 'default') + '&op=load', '').then(() => refresh()); };
+/* Profile slots: one-click save/load for 3 named profiles on the device. */
+document.querySelectorAll('.pslot-save').forEach(btn => {
+  btn.onclick = () => {
+    const slot = btn.dataset.slot;
+    profileEdited = false;
+    post('/api/profile/file?name=profile_' + slot + '&op=save', collectProfile(), true)
+      .then(r => { if (r === 'ok') btn.style.background = '#22c55e'; setTimeout(() => { btn.style.background = '#444'; }, 600); })
+      .catch(() => {});
+  };
+});
+document.querySelectorAll('.pslot-load').forEach(btn => {
+  btn.onclick = () => {
+    const slot = btn.dataset.slot;
+    profileEdited = false;
+    post('/api/profile/file?name=profile_' + slot + '&op=load', '')
+      .then(r => { if (r === 'ok') refresh(); else alert('Brak profilu ' + slot); })
+      .catch(() => {});
+  };
+});
+
+/* Export profile to a .json file on the user's computer. */
+$('btnProfileExport').onclick = () => {
+  const profile = collectProfile();
+  const json = JSON.stringify(profile);
+  const blob = new Blob([json], {type: 'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const ds = new Date().toISOString().slice(0,10);
+  a.download = 'profil_' + ds + '.json';
+  a.href = url; a.click();
+  URL.revokeObjectURL(url);
+};
+/* Import profile from a .json file on the user's computer. */
+$('btnProfileImport').onclick = () => $('profileFileInput').click();
+$('profileFileInput').onchange = () => {
+  const file = $('profileFileInput').files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const arr = JSON.parse(reader.result);
+      if (!Array.isArray(arr) || arr.length !== 24 || !Array.isArray(arr[0])) throw new Error('zły format');
+      profileEdited = false;
+      post('/api/profile', arr, true).then(() => refresh());
+    } catch (e) { alert('Nieprawidłowy plik profilu: ' + e.message); }
+  };
+  reader.readAsText(file);
+  $('profileFileInput').value = '';
+};
 
 $('btnLimits').onclick = () => post('/api/limits', {
   fault_grace_sec: +$('limGrace').value,

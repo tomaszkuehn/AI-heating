@@ -53,7 +53,10 @@ label input,label select{margin-top:4px}
 .q-WINDOW_OPEN{color:var(--warn)} .q-DISABLED{color:var(--muted)} .q-SIMULATED{color:var(--sim)}
 canvas{width:100%;background:#11151d;border:1px solid var(--bd);border-radius:8px}
 #chart24{height:220px} #chartDaily{height:180px}
-.profile-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:6px}
+.profile-grid{display:grid;grid-template-columns:repeat(12,1fr);gap:6px}
+.profile-slots{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+.profile-slots .pslot-label{font-size:12px;color:var(--muted);min-width:14px;text-align:center}
+.profile-slots .btn{font-size:11px;padding:4px 8px}
 .profile-grid .ph{background:#11151d;border:1px solid var(--bd);border-radius:8px;padding:6px;text-align:center}
 .profile-grid .ph .h{font-size:11px;color:var(--muted)}
 .profile-grid .ph input{width:100%;background:transparent;border:0;color:var(--text);font-size:12px;text-align:center;border-bottom:1px solid var(--bd);padding:2px}
@@ -83,7 +86,7 @@ button.sel{outline:2px solid var(--accent)}
 .sensor-detail-header{display:flex;justify-content:space-between;align-items:center}
 @media(max-width:640px){
   .grid,.grid3{grid-template-columns:repeat(2,1fr)}
-  .profile-grid{grid-template-columns:repeat(4,1fr)}
+  .profile-grid{grid-template-columns:repeat(6,1fr)}
   .tbl-scroll{margin:0 -14px;padding:0 14px}
   .tbl{font-size:11px}
 }

@@ -126,6 +126,12 @@ Jednostronicowa aplikacja (bez zależności) serwowana z firmware:
 - Sekcje konfiguracyjne (profil dobowy, wybieg pompy / tryb awaryjny,
   **zabezpieczenia i limity**, sieć, powiadomienia, symulacja) są domyślnie
   zwinięte do paska nagłówka i rozwijane kliknięciem.
+- **Profil dobowy** — grid **12 kolumn × 2 rzędy** (12 godzin w wierszu).
+  Temperatura wyłączenia (OFF) nad załączenia (ON). Trzy sloty pamięci
+  **na urządzeniu** (1/2/3) z jedno-klikowym zapisem i odczytem
+  (`/api/profile/file?name=profile_N`). **Eksport do pliku .json** (pobranie
+  na komputer) i **import z pliku** (wgranie z powrotem). Przycisk
+  „Zastosuj" waliduje i zapisuje do aktywnej konfiguracji.
 - **Responsywność** — na urządzeniach mobilnych tabela czujników przewija się
   poziomo (nie wychodzi poza kartę), siatka kafelków dashboardu zwija się do
   2 kolumn, a wykresy dopasowują szerokość do ekranu.
@@ -260,10 +266,9 @@ naraz (o najwyższym priorytecie wykrycia).
 - **Warunek:** `total_sensors > 0` i `healthy_sensors == 0` — żaden czujnik nie
   ma statusu `OK`/`SIMULATED` (np. cały interfejs UART padł, wszystkie w
   `TIMEOUT`).
-- **Zakończenie:** automatycznie po skasowaniu awarii, gdy choć jeden czujnik
-  wróci do zdrowia (awaria nie jest ponawiana, gdy warunek ustąpi, ale kolejne
-  `raise_fault` tego samego typu jest ignorowane — praktycznie znika po
-  „Wyczyść awarię" lub gdy inny warunek ją nadpisze).
+- **Zakończenie:** **automatyczne** — gdy choć jeden czujnik wróci do zdrowia
+  (`healthy_sensors > 0`), awaria jest kasowana samoczynnie (analogicznie do
+  `FAULT_NETWORK`).
 - **Akcje i rezultat:** stan sterownika przechodzi w `ST_FAULT`, **przekaźnik
   wyłączony** (`target_relay = false`) — brak wiarygodnych danych = brak grzania
   ze zwykłej histerezy. Jeśli włączony jest tryb awaryjny cykliczny, ma on

@@ -358,7 +358,15 @@ static esp_err_t h_profile_file(httpd_req_t *req)
     if (!qarg(req, "op", op, sizeof(op))) strcpy(op, "load");
     CFG_LOCK();
     if (strcmp(op, "save") == 0) {
-        if (storage_save_profile_file(name, &s_cfg->profile) != ESP_OK) CFG_RET(send_text(req, "save failed", 500));
+        /* Accept optional body with profile JSON; fall back to active config. */
+        char body[700];
+        int blen = read_body(req, body, sizeof(body));
+        daily_profile_t p;
+        if (blen > 0 && profile_from_json(&p, body, blen)) {
+            if (storage_save_profile_file(name, &p) != ESP_OK) CFG_RET(send_text(req, "save failed", 500));
+        } else {
+            if (storage_save_profile_file(name, &s_cfg->profile) != ESP_OK) CFG_RET(send_text(req, "save failed", 500));
+        }
     } else {
         daily_profile_t p;
         if (storage_load_profile_file(name, &p) != ESP_OK) CFG_RET(send_text(req, "load failed", 500));

@@ -109,9 +109,23 @@
     <div class="profile-grid" id="profileGrid"></div>
     <div class="actions">
       <button id="btnProfileApply" class="btn">Zastosuj (waliduj + zapisz)</button>
-      <button id="btnProfileFileSave" class="btn">Zapisz do pliku</button>
-      <button id="btnProfileFileLoad" class="btn">Wczytaj z pliku</button>
-      <input id="profileName" placeholder="nazwa profilu" class="inp">
+    </div>
+    <div class="profile-slots" style="margin-top:8px">
+      <span style="font-size:13px;color:var(--muted);margin-right:4px">Profile:</span>
+      <span class="pslot-label">1</span>
+      <button class="btn pslot-load" data-slot="1">Wczytaj</button>
+      <button class="btn pslot-save" data-slot="1" style="background:#444">Zapisz</button>
+      <span class="pslot-label" style="margin-left:8px">2</span>
+      <button class="btn pslot-load" data-slot="2">Wczytaj</button>
+      <button class="btn pslot-save" data-slot="2" style="background:#444">Zapisz</button>
+      <span class="pslot-label" style="margin-left:8px">3</span>
+      <button class="btn pslot-load" data-slot="3">Wczytaj</button>
+      <button class="btn pslot-save" data-slot="3" style="background:#444">Zapisz</button>
+    </div>
+    <div class="profile-slots" style="margin-top:8px;gap:8px">
+      <button id="btnProfileExport" class="btn" style="background:#444;font-size:12px;padding:5px 10px">📥 Eksportuj do pliku</button>
+      <button id="btnProfileImport" class="btn" style="background:#444;font-size:12px;padding:5px 10px">📤 Wczytaj z pliku</button>
+      <input type="file" id="profileFileInput" accept=".json" style="display:none">
     </div>
   </section>
 
