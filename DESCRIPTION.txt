@@ -1,0 +1,28 @@
+Projekt - kontroller ogrzewania
+
+System ma zbierać temperaturę z kilku czujników 1-6 rozlokowanych w pomieszczeniach. Te temperatury będą służyły do podjęcia decyzji, czy włączyć urządzenie grzewcze. Temperatura z każdego czujnika będzie włączana do średniej temperatury w budynku z definowalną wagą. Jeśli temperatura średnia będzie niższa niż temperatura załączenia ogrzewania zostaje wysłany sygnał do załączenia. Jeśli temperatura przekroczy temperaturę wyłączenia ogrzewania zostaje wysłany sygnał wyłączenia.
+Sygnał włączenia/wyłączenia pieca to linia GPIO.
+Temparatura każdego z czujników jest uśredniana z ostatnich 7 odczytów.
+Temperatura załączania i wyłączania jest konfigurowana jako 24 zakresy co godzinę. To musi być definiowalne przez użytkownika z możliwością zapisu takiego profilu do pliku i możliwością wczytania profilu z pliku. 
+Czujniki temperatury są podłączone przez zewnętrzny interfejs komunikujący się poprzez port szeregowy.
+System ma opcję wykrywania otwartego okna, która powoduje gwałtowny spadek temperatury jednego z czujników i ignorowanie go do momentu powrotu do poprzedniego zakresu.
+System ma opcjonalnny dodatkowy czujnik umieszczony na zewnątrz budynku. Dane z tego czujnika służą do oszacowania izolacyjności cieplnej budynku dla każdego z pomieszczeń osobno.
+System pracuje na ESP32-wroom, z wdrożonymi zabezpieczeniami przed zużyciem pamięci flash.
+System rejestruje temperatury co minutę.
+System oferuje dostę użytkownikowi przez www. Ta strona oferuje:
+1. możliwość definiowania czujników i wag
+2. podgląd temperatury każdego z czujników w okresie ostatnich 24 godzin
+3. podgląd temperatury uśrednionej, podgląd profilu załączania.
+4. pogląd temperatury średniej systemu i średniej zewnętrznej z ostatnich 12 miesięcy z rozdzielczością 1 dnia
+5. Jasny czerwony znacznik, że system w danej chwili grzeje.
+6. Znacznik zdrowia systemu - zielony jeśli wszystko działa bez zastrzeżeń.
+7. Strona powinna być wygodna w użyciu na desktopach i urządzeniach mobilnych.
+8. Wyłącznik urządzenia grzewczego.
+9. Włącznik funkcji 5min grzania, dla dodatkowego podgrzania budynku niezależnie od temperatury.
+10. Opcję przedłużania wybiegu pompy obiegowej - opcja to będzie co 2 minuty wysyłała krótki (konfigurowalny czas) impuls załączenia pieca co spowoduje przedłużenia wybiegu pompy. Czas regulowanego wybiegu konfigurowalny.
+11. Domyślnie ESP32 jest dostępne przez wbudowany AP z nazwą ESP i haslem "12345". Ma być możliwość skonfigurowania jako klienta innej sieci. Dodatkow potrzebna opcja resetu sieci do domyślnego AP poprzez przycisk na module.
+
+Dodatkowe opcje:
+1. system powinien wykrywać awarię systemu ogrzewania (czyli brak wzrostu temperatury po załączeniu urządzenia grzewczego) i wysyłać powiadomienie do użytkownika SMS lub e-mail. To powinno być konfigurowane.
+2. system powinien zapobiegać ciągłej pracy urządzenia grzewczego jeśli wzrost temperatury jest mniejszy niż zwykle co może oznaczać awarię któregoś z elementów instalacji np. zapowietrzone grzejniki lub zakręcone.
+3. Oferować tryb awaryjny gdy stan systemu grzewczego jest nieznany ale chcę uruchamiaz urządzenie grzewcze periodycznie np. na 15 minut co godzinę.

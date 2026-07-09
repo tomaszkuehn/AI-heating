@@ -327,7 +327,7 @@ static void aggregate_day(int key)
     xSemaphoreTake(s_fs_mutex, portMAX_DELAY);
 
     double sum_sys = 0, sum_ext = 0;
-    int n = 0, ext_n = 0;
+    int n = 0, ext_n = 0, heat_mins = 0;
 
     /* Scan the ring buffer for samples belonging to the target day. */
     int start = (s_ring_count < HE_RING_SIZE) ? 0 : s_ring_head;
@@ -337,6 +337,7 @@ static void aggregate_day(int key)
         if (he_isnan(s_ring[idx].system_temp)) continue;
         sum_sys += s_ring[idx].system_temp;
         n++;
+        if (s_ring[idx].heating_active) heat_mins++;
         if (!he_isnan(s_ring[idx].external_temp)) {
             sum_ext += s_ring[idx].external_temp;
             ext_n++;
@@ -351,9 +352,10 @@ static void aggregate_day(int key)
     xSemaphoreTake(s_fs_mutex, portMAX_DELAY);
     FILE *d = fopen(FS_DAILY, "a");
     if (d) {
-        int w = fprintf(d, "%d,%.2f,%.2f\n", key,
+        int w = fprintf(d, "%d,%.2f,%.2f,%d\n", key,
                         sum_sys / (double)n,
-                        ext_n ? sum_ext / (double)ext_n : -99.0);
+                        ext_n ? sum_ext / (double)ext_n : -99.0,
+                        heat_mins);
         fclose(d);
         if (w > 0) account_fs_write((size_t)w);
     }
@@ -400,11 +402,13 @@ esp_err_t storage_read_daily_aggregates(int months, minute_sample_t *out,
     while (fgets(line, sizeof(line), f)) {
         if (idx++ < skip) continue;
         if (*count >= max) break;
-        int key; float sys, ext;
-        if (sscanf(line, "%d,%f,%f", &key, &sys, &ext) == 3) {
+        int key, heat = 0; float sys, ext;
+        int nf = sscanf(line, "%d,%f,%f,%d", &key, &sys, &ext, &heat);
+        if (nf >= 3) {
             out[*count].ts = key;
             out[*count].system_temp = sys;
             out[*count].external_temp = (ext < -98.0f) ? he_nan() : ext;
+            out[*count].heating_active = (nf >= 4) ? (uint8_t)heat : 0;
             (*count)++;
         }
     }

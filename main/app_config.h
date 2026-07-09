@@ -13,6 +13,7 @@ extern "C" {
 /* ---- GPIO ---- */
 #define HE_GPIO_HEATING         GPIO_NUM_16   /* relay line to the furnace   */
 #define HE_GPIO_NET_RESET_BTN   GPIO_NUM_0    /* BOOT button: hold to reset  */
+#define HE_GPIO_LED             GPIO_NUM_2    /* onboard LED (blinks during net-reset hold) */
 #define HE_NET_RESET_HOLD_MS    5000          /* 5s hold => network reset    */
 
 /* ---- Sensor interface (external board over UART) ---- */

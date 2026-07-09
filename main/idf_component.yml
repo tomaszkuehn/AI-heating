@@ -3,3 +3,4 @@
 ## resilience and log-style writes (spec section 10).
 dependencies:
   joltwallet/littlefs: "^1.22.0"
+  espressif/mdns: "^1.*"

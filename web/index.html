@@ -17,6 +17,8 @@
     <span id="heatingMark" class="mark mark-off">NIE GRZEJE</span>
     <span id="healthMark" class="mark mark-ok">Zdrowy</span>
     <span id="stateMark" class="state">IDLE</span>
+    <span id="timeSync" style="font-size:12px;color:var(--muted);padding-left:6px">🕐</span>
+    <span id="devIp" style="font-size:12px;color:var(--accent);padding-left:8px;font-family:monospace">--</span>
   </div>
 </header>
 
@@ -34,6 +36,10 @@
         <div id="flashV" class="v" style="font-size:16px">--</div>
         <div class="pbar"><div id="flashBar" class="pbar-fill"></div></div>
         <div id="flashWear" style="font-size:11px;margin-top:4px;color:var(--muted)"></div>
+      </div>
+      <div class="tile">
+        <div class="k">Czas grzania (24h)</div>
+        <div id="heatTime" class="v">0 min</div>
       </div>
     </div>
     <div class="actions">
@@ -72,7 +78,7 @@
       <div id="sensorToggles" style="display:flex;align-items:center;flex-wrap:wrap"></div>
     </div>
     <canvas id="chart24" height="220"></canvas>
-    <h2>Średnia systemowa i zewnętrzna — 12 miesięcy (1 dzień)</h2>
+    <h2>Zużycie energii (minuty grzania) — 12 miesięcy (słupki) + śr. systemowa (linia)</h2>
     <canvas id="chartDaily" height="180"></canvas>
   </section>
 

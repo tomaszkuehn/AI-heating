@@ -29,4 +29,5 @@ idf_component_register(
         esp_timer
         lwip
         driver
+        mdns
 )

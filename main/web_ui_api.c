@@ -200,6 +200,7 @@ static esp_err_t h_state(httpd_req_t *req)
         "\"flash_wear_pct\":%.3f,\"flash_erase_cycles\":%lu,"
         "\"flash_nvs_writes\":%lu,\"flash_fs_kb\":%lu,"
         "\"fault_grace_sec\":%d,\"max_on_sec\":%d,\"max_on_break_sec\":%d,"
+        "\"time_synced\":%s,\"device_ip\":\"%s\","
         "\"sensors\":[",
         sname(snap.state), snap.heating_active ? "true" : "false",
         snap.health_ok ? "true" : "false",
@@ -214,7 +215,9 @@ static esp_err_t h_state(httpd_req_t *req)
         (unsigned)fs_used, (unsigned)fs_total,
         (double)fw.est_erase_pct, (unsigned long)fw.est_erase_cycles,
         (unsigned long)fw.nvs_commits, (unsigned long)fw.fs_kb_written,
-        s_cfg->fault_grace_sec, s_cfg->max_on_sec, s_cfg->max_on_break_sec);
+        s_cfg->fault_grace_sec, s_cfg->max_on_sec, s_cfg->max_on_break_sec,
+        he_time_valid() ? "true" : "false",
+        network_device_ip());
 
     for (int i = 0; i < s_cfg->sensor_count && p + 120 < (int)sizeof(b); i++) {
         sensor_t *s = &s_cfg->sensors[i];
@@ -572,10 +575,11 @@ static esp_err_t h_daily(httpd_req_t *req)
     httpd_resp_send_chunk(req, "[", 1);
     char line[80];
     for (int i = 0; i < n; i++) {
-        int L = snprintf(line, sizeof(line), "%s[%d,%.2f,%.2f]", i ? "," : "",
+        int L = snprintf(line, sizeof(line), "%s[%d,%.2f,%.2f,%u]", i ? "," : "",
                          (int)s_daily[i].ts,
                          he_isnan(s_daily[i].system_temp) ? -99.0f : s_daily[i].system_temp,
-                         he_isnan(s_daily[i].external_temp) ? -99.0f : s_daily[i].external_temp);
+                         he_isnan(s_daily[i].external_temp) ? -99.0f : s_daily[i].external_temp,
+                         (unsigned)s_daily[i].heating_active);
         if (httpd_resp_send_chunk(req, line, L) != ESP_OK) { xSemaphoreGive(s_hist_mutex); httpd_resp_send_chunk(req, NULL, 0); return ESP_FAIL; }
     }
     xSemaphoreGive(s_hist_mutex);

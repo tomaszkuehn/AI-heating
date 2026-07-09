@@ -28,6 +28,9 @@ void network_apply(const system_config_t *cfg);
 /* STA connected with an IP address. */
 bool network_is_up(void);
 
+/* Current device IP address (e.g. "192.168.4.1" or DHCP address). */
+const char *network_device_ip(void);
+
 /* Start the hardware reset-button watcher. */
 void network_start_reset_button(system_config_t *cfg);
 

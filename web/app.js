@@ -65,6 +65,22 @@ function renderDashboard(s) {
 
   $('btnKill').textContent = s.disabled ? 'Włącz urządzenie grzewcze' : 'Wyłącz urządzenie grzewcze';
   $('btnBoost').textContent = s.boost ? 'Anuluj BOOST' : 'Grzanie 5 min (BOOST)';
+
+  /* Heating time in the current zoom window. */
+  if (window._lastHeatMins !== undefined) {
+    $('heatTime').textContent = window._lastHeatMins + ' min';
+  }
+
+  /* Time sync indicator. */
+  const ts = $('timeSync');
+  if (ts) {
+    ts.textContent = s.time_synced ? '🕐 Czas zsynchronizowany' : '🕐 Czas lokalny';
+    ts.style.color = s.time_synced ? 'var(--ok)' : 'var(--warn)';
+  }
+  /* Device IP so the user knows what address to use. */
+  if ($('devIp') && s.device_ip) {
+    $('devIp').textContent = 'http://' + s.device_ip + '/';
+  }
 }
 
 /* Full render: dashboard + editable forms. Used on first load and after a
@@ -338,6 +354,20 @@ function render24(cv, rows, profile, sensors) {
   }
   legend.push(['profil ON/OFF', '#f59e0b']);
 
+  /* Heating bar: 4px red strip at chart bottom for each minute the relay was ON. */
+  let heatMins = 0;
+  rows.forEach(d => {
+    if (d[0] < t0 || d[0] > t1) return;
+    if (d[3] === 1) {
+      const x0 = X(Math.max(d[0] - 30, t0)), x1 = X(Math.min(d[0] + 30, t1));
+      ctx.fillStyle = 'rgba(239,68,68,0.6)';
+      ctx.fillRect(x0, H - padB + 4, Math.max(1, x1 - x0), 5);
+      heatMins++;
+    }
+  });
+  /* Expose for the dashboard. */
+  window._lastHeatMins = heatMins;
+
   /* legend */
   ctx.font = '11px sans-serif';
   let lx = padL;
@@ -353,10 +383,78 @@ async function load24h() {
   draw24h();
 }
 
+function drawEnergyBars(cv, data) {
+  if (!data || !data.length) return;
+  const dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth || 600;
+  const H = +cv.getAttribute('height') || 180;
+  cv.width = Math.round(W * dpr);
+  cv.height = Math.round(H * dpr);
+  cv.style.height = H + 'px';
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  const padL = 36, padR = 8, padT = 16, padB = 20;
+  const n = data.length;
+  if (n < 2) { ctx.fillStyle='#8a93a3'; ctx.fillText('za mało danych', padL, H/2); return; }
+
+  /* Find max heating minutes for Y scale, also max sys temp for overlay. */
+  let maxMins = 0, maxSys = -Infinity, minSys = Infinity;
+  data.forEach(d => { maxMins = Math.max(maxMins, d[3]||0); if (d[1]>-98) { maxSys=Math.max(maxSys,d[1]); minSys=Math.min(minSys,d[1]); } });
+  if (maxMins < 1) maxMins = 1440;
+  if (!isFinite(minSys)) minSys = 0;
+  if (!isFinite(maxSys)) maxSys = 30;
+  const barW = Math.max(2, (W - padL - padR) / n * 0.7);
+  const gap = (W - padL - padR) / n;
+
+  /* Y axis (left: heating minutes). */
+  ctx.font = '10px monospace';
+  const yM = v => H - padB - (v / maxMins) * (H - padT - padB);
+  const yS = v => H - padB - ((v - minSys) / (maxSys - minSys || 1)) * (H - padT - padB);
+  for (let g = 0; g <= 3; g++) {
+    const val = maxMins * g / 3, yy = yM(val);
+    ctx.strokeStyle = '#262b35'; ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(W - padR, yy); ctx.stroke();
+    ctx.fillStyle = '#8a93a3'; ctx.fillText(Math.round(val) + '', 2, yy + 3);
+  }
+
+  /* Bars + day labels. */
+  data.forEach((d, i) => {
+    const x = padL + i * gap + (gap - barW) / 2;
+    const h = Math.max(1, (d[3]||0) / maxMins * (H - padT - padB));
+    ctx.fillStyle = 'rgba(245,158,11,0.7)';
+    ctx.fillRect(x, H - padB - h, barW, h);
+    /* Day label every ~30 days. */
+    if (i % Math.max(1, Math.floor(n / 12)) === 0) {
+      const ts = d[0], ds = String(ts);
+      const mmdd = ds.length === 8 ? ds.substring(4,6)+'-'+ds.substring(6,8) : ds;
+      ctx.fillStyle = '#8a93a3';
+      ctx.save(); ctx.translate(x + barW/2, H - 4); ctx.rotate(-0.6);
+      ctx.fillText(mmdd, 0, 0); ctx.restore();
+    }
+  });
+
+  /* System avg line overlay (blue). */
+  ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 1.4; ctx.beginPath();
+  let first = true;
+  data.forEach((d, i) => {
+    if (d[1] <= -98) { first = true; return; }
+    const x = padL + i * gap + gap/2, py = yS(d[1]);
+    if (first) { ctx.moveTo(x, py); first = false; } else ctx.lineTo(x, py);
+  });
+  ctx.stroke();
+
+  /* Legend. */
+  ctx.font = '11px sans-serif';
+  ctx.fillStyle = 'rgba(245,158,11,0.7)'; ctx.fillRect(padL, 2, 10, 10);
+  ctx.fillStyle = '#e7ecf3'; ctx.fillText('minuty grzania', padL + 14, 11);
+  ctx.fillStyle = '#3b82f6'; ctx.fillRect(padL + 110, 2, 10, 10);
+  ctx.fillStyle = '#e7ecf3'; ctx.fillText('śr. systemowa (°C)', padL + 124, 11);
+}
+
 async function loadDaily() {
   const data = await api('/api/daily') || [];
-  const sys = data.map(d => d[1]), ext = data.map(d => d[2]);
-  drawSeries($('chartDaily'), [sys, ext], ['system (śr. dzienna)', 'zewn. (śr. dzienna)'], ['#3b82f6', '#f59e0b']);
+  drawEnergyBars($('chartDaily'), data);
 }
 
 /* ---- zoom + sensor toggles ---- */

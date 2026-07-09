@@ -101,17 +101,32 @@ Jednostronicowa aplikacja (bez zależności) serwowana z firmware:
   najnowszej próbki, więc przewija się w lewo w miarę napływu danych), ze skalą
   godzinową. Rysuje temperaturę systemową, zewnętrzną oraz osobną linię dla
   każdego aktywnego czujnika wewnętrznego. W tło nałożony jest profil dobowy
-  (pasmo ON/OFF).
+  (pasmo ON/OFF). **Czerwony pasek na dole** pokazuje minuty, w których
+  przekaźnik grzania był aktywny.
 - **Zoom osi czasu** — przyciski **1h · 6h · 12h · 24h** nad wykresem.
   Tiki osi X dostosowują się automatycznie: co 15 min dla okna 1 h, co 1 h
   dla 6 h, co 3 h dla szerszych. Aktywny przycisk jest podświetlony.
 - **Wybór czujników na wykresie** — kolorowe checkboxy z nazwą czujnika
   (w jego kolorze linii) pozwalają pokazać/ukryć poszczególne czujniki
   wewnętrzne bez przeładowania strony. Domyślnie wszystkie widoczne.
-- **Wykres 12 miesięcy** — średnie dobowe (systemowa i zewnętrzna).
+- **Wykres zużycia energii (12 mies.)** — słupki minut grzania na dobę
+  (pomarańczowe) z nałożoną linią średniej temperatury systemowej (niebieska).
+  Dane z `daily.csv` (kolumna `heat_mins`).
 - Sekcje konfiguracyjne (profil dobowy, wybieg pompy / tryb awaryjny,
   **zabezpieczenia i limity**, sieć, powiadomienia, symulacja) są domyślnie
   zwinięte do paska nagłówka i rozwijane kliknięciem.
+- **Pulpit** pokazuje czas grzania w oknie (24h/zoom), zużycie flash, adres IP
+  urządzenia i status synchronizacji czasu (🕐 zielony = SNTP, żółty = lokalny).
+
+### Dostęp przez mDNS
+
+W trybie STA (klient routera) urządzenie rejestruje nazwę **`heating.local`**
+przez mDNS (`espressif/mdns`). Panel jest wtedy dostępny jako
+**`http://heating.local/`** — nie trzeba znać adresu IP przydzielonego przez
+DHCP. Wymaga obsługi mDNS/Bonjour po stronie klienta (Windows 10+ natywnie,
+Linux wymaga `avahi-daemon`, Android/iOS natywnie).
+
+Adres IP urządzenia jest też widoczny w górnym pasku panelu (obok stanu).
 
 ## Konfigurowalne limity i zabezpieczenia
 
@@ -342,8 +357,21 @@ sieci (SNTP). Współczynnik: `HE_SIM_TIME_SCALE` w `app_config.h`.
 |-------------------|------|-----------------------------|
 | Załączenie pieca  | 16   | linia do przekaźnika        |
 | Reset sieci (btn) | 0    | BOOT, przytrzymanie 5 s     |
+| Dioda LED         | 2    | wbudowana, miga podczas przytrzymania BOOT |
 | UART czujników TX | 17   | zewn. interfejs czujników   |
 | UART czujników RX | 18   |                             |
 
-Protokół ramek: `[0xAA][len][payload][CRC8][0x55]`; odpowiedź na poll:
-`[count][id, t_hi, t_lo]...` (temperatura w setnych stopnia C).
+### Przycisk BOOT + dioda LED
+
+Przytrzymanie przycisku BOOT (GPIO0) powoduje:
+- **0–3 s**: wolne miganie diody LED (GPIO2, ~500 ms) — ostrzeżenie.
+- **3–5 s**: szybkie miganie (~200 ms) — za chwilę reset.
+- **≥5 s**: dioda świeci ciągle, **reset konfiguracji sieci** do AP
+  `ESP` / `12345678` (pozostałe ustawienia zachowane), potem gaśnie.
+Puszczenie przed upływem 5 s anuluje operację.
+
+Przycisk EN na module to sprzętowy reset procesora — nie jest obsługiwany
+programowo (podczas trzymania EN kod nie działa).
+
+Protokół ramek czujników: `[0xAA][len][payload][CRC8][0x55]`; odpowiedź na
+poll: `[count][id, t_hi, t_lo]...` (temperatura w setnych stopnia C).
