@@ -63,6 +63,15 @@ canvas{width:100%;background:#11151d;border:1px solid var(--bd);border-radius:8p
 .sim-card{border-color:var(--sim)}
 .warn{color:var(--warn);font-size:13px}
 .hidden{display:none}
+/* Dashboard header — moved from old top bar */
+.dash-header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px}
+.dash-status{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+/* Boiler status circle */
+.boiler-circle{width:72px;height:72px;border-radius:50%;background:#10253d;border:3px solid #3b82f6;display:flex;align-items:center;justify-content:center;margin:8px auto;transition:all .4s}
+.boiler-circle.on{background:#4a1018;border-color:#ef4444;box-shadow:0 0 24px rgba(239,68,68,.45)}
+.boiler-circle.off{background:#1a1c20;border-color:#555;box-shadow:none}
+.boiler-icon{font-size:32px;line-height:1}
+.boiler-label{text-align:center;font-size:14px;font-weight:600;margin-top:6px}
 button.sel{outline:2px solid var(--accent)}
 @media(max-width:640px){
   .grid,.grid3{grid-template-columns:repeat(2,1fr)}

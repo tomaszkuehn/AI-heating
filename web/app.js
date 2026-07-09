@@ -25,9 +25,7 @@ function fmtUp(ms) {
  * themselves" bug). */
 function renderDashboard(s) {
   lastState = s;
-  const heat = $('heatingMark'), hlth = $('healthMark'), stt = $('stateMark');
-  heat.className = 'mark ' + (s.heating ? 'mark-on' : 'mark-off');
-  heat.textContent = s.heating ? '🔥 GRZEJE' : 'NIE GRZEJE';
+  const hlth = $('healthMark'), stt = $('stateMark');
   hlth.className = 'mark ' + (s.health ? 'mark-ok' : 'mark-bad');
   hlth.textContent = s.health ? '● Zdrowy' : '● Problem';
   stt.textContent = s.state;
@@ -63,11 +61,25 @@ function renderDashboard(s) {
   if (s.fault && s.fault !== 'NONE') { fi.classList.remove('hidden'); fi.textContent = 'Awaria: ' + s.fault; }
   else fi.classList.add('hidden');
 
-  /* Boiler status: green = enabled (normal), red = disabled (killed). */
-  const bs = $('boilerStatus');
-  if (bs) {
-    bs.textContent = s.disabled ? 'Wyłączony' : 'Włączony';
-    bs.style.color = s.disabled ? 'var(--err)' : 'var(--ok)';
+  /* Boiler status: flame in circle when heating, blue when idle, gray X when disabled. */
+  const bc = $('boilerCircle'), bi = $('boilerIcon'), bs = $('boilerStatus');
+  if (bc && bi && bs) {
+    if (s.disabled) {
+      bc.className = 'boiler-circle off';
+      bi.textContent = '✕';
+      bi.style.color = '#666';
+      bs.textContent = 'Wyłączony';
+    } else if (s.heating) {
+      bc.className = 'boiler-circle on';
+      bi.textContent = '🔥';
+      bi.style.color = '';
+      bs.textContent = 'Grzeje';
+    } else {
+      bc.className = 'boiler-circle';
+      bi.textContent = '';
+      bi.style.color = '';
+      bs.textContent = 'Nie grzeje';
+    }
   }
   /* Kill button: toggle label + color, moved to end of button row. */
   $('btnKill').textContent = s.disabled ? 'Włącz ogrzewanie' : 'Wyłącz ogrzewanie';

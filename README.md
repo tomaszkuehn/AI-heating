@@ -115,8 +115,15 @@ Jednostronicowa aplikacja (bez zależności) serwowana z firmware:
 - Sekcje konfiguracyjne (profil dobowy, wybieg pompy / tryb awaryjny,
   **zabezpieczenia i limity**, sieć, powiadomienia, symulacja) są domyślnie
   zwinięte do paska nagłówka i rozwijane kliknięciem.
-- **Pulpit** pokazuje czas grzania w oknie (24h/zoom), zużycie flash, adres IP
-  urządzenia i status synchronizacji czasu (🕐 zielony = SNTP, żółty = lokalny).
+- **Pulpit** — nagłówek panelu zawiera tytuł, wskaźnik zdrowia systemu, stan
+  automatu, adres IP urządzenia i status synchronizacji czasu (🕐 zielony =
+  SNTP, żółty = lokalny). Kafelki pokazują: temperatury, liczbę sprawnych
+  czujników, uptime, zużycie flash, czas grzania w oknie (24h/zoom) i status
+  pieca.
+- **Status pieca** — kafelek z dużym kołem:
+  - 🔥 **czerwone koło + płomień** = grzanie aktywne, podpis „Grzeje"
+  - 🔵 **niebieskie koło** = grzanie włączone, ale nie grzeje, podpis „Nie grzeje"
+  - ◯ **szare koło + ✕** = ogrzewanie wyłączone (kill switch), podpis „Wyłączony"
 
 ### Dostęp przez mDNS
 
@@ -126,7 +133,7 @@ przez mDNS (`espressif/mdns`). Panel jest wtedy dostępny jako
 DHCP. Wymaga obsługi mDNS/Bonjour po stronie klienta (Windows 10+ natywnie,
 Linux wymaga `avahi-daemon`, Android/iOS natywnie).
 
-Adres IP urządzenia jest też widoczny w górnym pasku panelu (obok stanu).
+Adres IP urządzenia jest też widoczny w nagłówku panelu „Pulpit" (obok stanu systemu).
 
 ## Konfigurowalne limity i zabezpieczenia
 
@@ -312,7 +319,7 @@ awaryjny → awaria → histereza normalna. Każda **zmiana stanu** jest logowan
 | **Blokada antyoscylacyjna** | każde wejście w nowy stan ustawia `HE_ANTIOSC_LOCK_SEC = 180 s` | odliczenie do zera (skalowane ×10 w symulacji) | wstrzymuje przełączenie ON↔OFF, tłumi migotanie na progu |
 | **Zabezpieczenie MAX ON** | ciągłe grzanie ≥ `max_on_sec` (domyślnie 4 h, konfigurowalne) | po upływie `max_on_break_sec` (domyślnie 10 min, konfigurowalne) | wymusza OFF + twardą przerwę niezależnie od histerezy (ochrona przed „zawieszonym" termostatem) |
 | **BOOST 5 min** | przycisk „Grzanie 5 min" (`/api/boost`) | upływ `HE_BOOST_DURATION_SEC = 300 s` lub ponowne kliknięcie (anuluj) | wymusza grzanie ponad histerezę; po zakończeniu wraca do decyzji histerezy |
-| **Kill switch** | przycisk „Wyłącz urządzenie grzewcze" (`/api/heating?disable=1`) | ponowne włączenie | najwyższy priorytet: przekaźnik OFF, stan `ST_IDLE`, ignoruje profil i BOOST |
+| **Kill switch** | przycisk „Wyłącz ogrzewanie" (`/api/heating?disable=1`) z potwierdzeniem „Na pewno?" | ponowne włączenie tym samym przyciskiem (zielony „Włącz ogrzewanie") | najwyższy priorytet: przekaźnik OFF, stan `ST_IDLE`, ignoruje profil i BOOST; status pieca pokazuje szare koło z ✕ i podpis „Wyłączony" |
 | **Wybieg pompy** | przejście `HEATING → OFF` przy `pump.enabled` | upływ `total_seconds` | stan `ST_PUMP_OVERRUN`: krótkie impulsy (`impulse_seconds` co `period_seconds`) rozpraszają ciepło resztkowe |
 | **Tryb awaryjny cykliczny** | `emergency.enabled` | wyłączenie opcji | stan `ST_EMERGENCY_CYCLIC`: ON przez `on_seconds` co `period_seconds` niezależnie od czujników — ochrona przeciwzamrożeniowa gdy brak danych |
 | **Tryb symulacji** | włączona symulacja czujników/ogrzewania | wyłączenie | stan `ST_SIMULATION`; decyzja ON/OFF liczona jak zwykle, ale GPIO nie jest sterowane (chyba że tryb mieszany) |

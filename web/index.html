@@ -11,21 +11,18 @@
   ⚠ TRYB SYMULACJI AKTYWNY — sygnały nie trafiają na fizyczne GPIO (chyba że włączono tryb mieszany)
 </div>
 
-<header class="bar">
-  <div class="title">Kontroler ogrzewania</div>
-  <div class="status">
-    <span id="heatingMark" class="mark mark-off">NIE GRZEJE</span>
-    <span id="healthMark" class="mark mark-ok">Zdrowy</span>
-    <span id="stateMark" class="state">IDLE</span>
-    <span id="timeSync" style="font-size:12px;color:var(--muted);padding-left:6px">🕐</span>
-    <span id="devIp" style="font-size:12px;color:var(--accent);padding-left:8px;font-family:monospace">--</span>
-  </div>
-</header>
-
 <main>
   <!-- Dashboard -->
   <section class="card">
-    <h2>Pulpit</h2>
+    <div class="dash-header">
+      <h2 style="margin:0">Kontroler ogrzewania</h2>
+      <div class="dash-status">
+        <span id="healthMark" class="mark mark-ok">Zdrowy</span>
+        <span id="stateMark" class="state">IDLE</span>
+        <span id="timeSync" style="font-size:12px;color:var(--muted)">🕐</span>
+        <span id="devIp" style="font-size:12px;color:var(--accent);font-family:monospace">--</span>
+      </div>
+    </div>
     <div class="grid">
       <div class="tile"><div class="k">Temp. systemowa</div><div id="sysTemp" class="v">--</div></div>
       <div class="tile"><div class="k">Temp. zewn.</div><div id="extTemp" class="v">--</div></div>
@@ -41,9 +38,12 @@
         <div class="k">Czas grzania (24h)</div>
         <div id="heatTime" class="v">0 min</div>
       </div>
-      <div class="tile">
+      <div class="tile" style="text-align:center">
         <div class="k">Status pieca</div>
-        <div id="boilerStatus" class="v" style="font-size:16px;color:var(--ok)">Włączony</div>
+        <div id="boilerCircle" class="boiler-circle">
+          <span id="boilerIcon" class="boiler-icon"></span>
+        </div>
+        <div id="boilerStatus" class="boiler-label">Włączony</div>
       </div>
     </div>
     <div class="actions">
