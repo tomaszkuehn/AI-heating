@@ -1,0 +1,10 @@
+# Name,     Type, SubType, Offset,   Size,    Flags
+# NVS: key/value configuration (network, sensors, weights, offsets, flags).
+nvs,        data, nvs,     0x9000,   0x6000,
+# PHY calibration data.
+phy_init,   data, phy,     0xf000,   0x1000,
+# Application firmware.
+factory,    app,  factory, 0x10000,  1M,
+# LittleFS: user files, daily profiles, configuration exports, history & logs.
+# Subtype spiffs (0x82) is reused; the littlefs component mounts by label.
+storage,    data, spiffs,  ,         0xF0000,

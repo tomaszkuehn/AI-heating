@@ -1,0 +1,5 @@
+## Managed component dependencies (ESP Component Registry).
+## esp_littlefs provides LittleFS — preferred over SPIFFS for power-loss
+## resilience and log-style writes (spec section 10).
+dependencies:
+  joltwallet/littlefs: "^1.22.0"

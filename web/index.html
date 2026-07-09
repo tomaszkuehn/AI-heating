@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Kontroler ogrzewania ESP32</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="simBanner" class="sim-banner hidden">
+  ⚠ TRYB SYMULACJI AKTYWNY — sygnały nie trafiają na fizyczne GPIO (chyba że włączono tryb mieszany)
+</div>
+
+<header class="bar">
+  <div class="title">Kontroler ogrzewania</div>
+  <div class="status">
+    <span id="heatingMark" class="mark mark-off">NIE GRZEJE</span>
+    <span id="healthMark" class="mark mark-ok">Zdrowy</span>
+    <span id="stateMark" class="state">IDLE</span>
+  </div>
+</header>
+
+<main>
+  <!-- Dashboard -->
+  <section class="card">
+    <h2>Pulpit</h2>
+    <div class="grid">
+      <div class="tile"><div class="k">Temp. systemowa</div><div id="sysTemp" class="v">--</div></div>
+      <div class="tile"><div class="k">Temp. zewn.</div><div id="extTemp" class="v">--</div></div>
+      <div class="tile"><div class="k">Czujniki OK</div><div id="sensOk" class="v">--</div></div>
+      <div class="tile"><div class="k">Uptime</div><div id="uptime" class="v">--</div></div>
+      <div class="tile">
+        <div class="k">Pamięć flash (dane)</div>
+        <div id="flashV" class="v" style="font-size:16px">--</div>
+        <div class="pbar"><div id="flashBar" class="pbar-fill"></div></div>
+        <div id="flashWear" style="font-size:11px;margin-top:4px;color:var(--muted)"></div>
+      </div>
+    </div>
+    <div class="actions">
+      <button id="btnBoost" class="btn">Grzanie 5 min (BOOST)</button>
+      <button id="btnKill" class="btn btn-danger">Wyłącz urządzenie grzewcze</button>
+      <button id="btnFault" class="btn">Wyczyść awarię</button>
+    </div>
+    <div id="faultInfo" class="fault hidden"></div>
+  </section>
+
+  <!-- Sensors -->
+  <section class="card">
+    <h2>Czujniki — wagi / offsety</h2>
+    <div class="actions" style="margin:0 0 8px">
+      <span class="k" style="color:var(--muted);font-size:13px;align-self:center">Liczba czujników wewn.:</span>
+      <button id="btnSensDec" class="btn" style="padding:6px 12px">−</button>
+      <span id="sensCount" class="v" style="font-size:16px;align-self:center">--</span>
+      <button id="btnSensInc" class="btn" style="padding:6px 12px">+</button>
+    </div>
+    <table class="tbl" id="sensorsTable">
+      <thead><tr><th>ID</th><th>Nazwa</th><th>Aktywny</th><th>Waga</th><th>Offset kal.</th><th>Offset komf.</th><th>Jakość</th><th>Temp eff.</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <!-- Charts -->
+  <section class="card">
+    <h2>Temperatury — ostatnie 24 h</h2>
+    <div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:8px">
+      <div id="zoomBar" style="display:flex;gap:4px">
+        <button class="btn zoom-btn sel" data-h="24" style="padding:5px 10px;font-size:12px">24h</button>
+        <button class="btn zoom-btn" data-h="12" style="padding:5px 10px;font-size:12px">12h</button>
+        <button class="btn zoom-btn" data-h="6" style="padding:5px 10px;font-size:12px">6h</button>
+        <button class="btn zoom-btn" data-h="1" style="padding:5px 10px;font-size:12px">1h</button>
+      </div>
+      <div id="sensorToggles" style="display:flex;align-items:center;flex-wrap:wrap"></div>
+    </div>
+    <canvas id="chart24" height="220"></canvas>
+    <h2>Średnia systemowa i zewnętrzna — 12 miesięcy (1 dzień)</h2>
+    <canvas id="chartDaily" height="180"></canvas>
+  </section>
+
+  <!-- Profile -->
+  <section class="card collapsible collapsed">
+    <h2 class="card-toggle"><span class="chev">▸</span> Profil dobowy (24 h)</h2>
+    <div class="profile-grid" id="profileGrid"></div>
+    <div class="actions">
+      <button id="btnProfileApply" class="btn">Zastosuj (waliduj + zapisz)</button>
+      <button id="btnProfileFileSave" class="btn">Zapisz do pliku</button>
+      <button id="btnProfileFileLoad" class="btn">Wczytaj z pliku</button>
+      <input id="profileName" placeholder="nazwa profilu" class="inp">
+    </div>
+  </section>
+
+  <!-- Pump / Emergency -->
+  <section class="card collapsible collapsed">
+    <h2 class="card-toggle"><span class="chev">▸</span> Wybieg pompy / tryb awaryjny</h2>
+    <label><input type="checkbox" id="pumpEn"> włączony (wybieg pompy)</label>
+    <div class="grid3">
+      <label>Impuls (s)<input type="number" id="pumpImpulse" class="inp"></label>
+      <label>Okres (s)<input type="number" id="pumpPeriod" class="inp"></label>
+      <label>Suma (s)<input type="number" id="pumpTotal" class="inp"></label>
+    </div>
+    <button id="btnPump" class="btn">Zapisz</button>
+    <h3>Tryb awaryjny periodyczny</h3>
+    <label><input type="checkbox" id="emEn"> włączony</label>
+    <div class="grid3">
+      <label>Czas ON (s)<input type="number" id="emOn" class="inp"></label>
+      <label>Okres (s)<input type="number" id="emPeriod" class="inp"></label>
+    </div>
+    <button id="btnEm" class="btn">Zapisz</button>
+  </section>
+
+  <!-- Limits -->
+  <section class="card collapsible collapsed">
+    <h2 class="card-toggle"><span class="chev">▸</span> Zabezpieczenia i limity</h2>
+    <div class="grid3">
+      <label>Karencja FAULT_NO_HEAT_RISE (s)<input type="number" id="limGrace" class="inp" min="60" max="3600"></label>
+      <label>Maks. ciągłe grzanie (s)<input type="number" id="limMaxOn" class="inp" min="300" max="86400"></label>
+      <label>Przerwa po maks. grzaniu (s)<input type="number" id="limBreak" class="inp" min="60" max="86400"></label>
+    </div>
+    <button id="btnLimits" class="btn">Zapisz limity</button>
+  </section>
+
+  <!-- Network -->
+  <section class="card collapsible collapsed">
+    <h2 class="card-toggle"><span class="chev">▸</span> Sieć</h2>
+    <label><input type="checkbox" id="netSta"> tryb klient (odznacz = AP domyślne)</label>
+    <label>SSID<input id="netSsid" class="inp"></label>
+    <label>Hasło<input id="netPass" class="inp" type="password"></label>
+    <button id="btnNet" class="btn">Zapisz i zastosuj</button>
+  </section>
+
+  <!-- Notifications -->
+  <section class="card collapsible collapsed">
+    <h2 class="card-toggle"><span class="chev">▸</span> Powiadomienia (e-mail / SMS)</h2>
+    <label><input type="checkbox" id="nEmail"> e-mail</label>
+    <label>Odbiorca<input id="nEmailTo" class="inp"></label>
+    <label>Serwer SMTP<input id="nSmtpHost" class="inp"></label>
+    <label>Użytkownik<input id="nSmtpUser" class="inp"></label>
+    <label>Hasło<input id="nSmtpPass" class="inp" type="password"></label>
+    <label><input type="checkbox" id="nSms"> SMS</label>
+    <label>Telefon<input id="nSmsPhone" class="inp"></label>
+    <label>Brama SMS<input id="nSmsGw" class="inp"></label>
+    <button id="btnNotify" class="btn">Zapisz</button>
+  </section>
+
+  <!-- Simulation -->
+  <section class="card sim-card collapsible collapsed">
+    <h2 class="card-toggle"><span class="chev">▸</span> Symulacja</h2>
+    <p class="warn">Symulacja czujników / ogrzewania służy testom bez sprzętu.</p>
+    <label><input type="checkbox" id="simHeat"> symulacja ogrzewania (bez GPIO)</label>
+    <label><input type="checkbox" id="simMixed"> tryb mieszany (GPIO aktywne — lab)</label>
+    <label><input type="checkbox" id="simAccel"> przyspieszony czas ×10 (szybka symulacja)</label>
+    <label>Tryb odpowiedzi
+      <select id="simMode" class="inp">
+        <option value="0">Skuteczne grzanie</option>
+        <option value="1">Nieskuteczne grzanie</option>
+        <option value="2">Przegrzewanie</option>
+      </select>
+    </label>
+    <div class="grid3">
+      <label>Szybkość grzania<input id="simHR" class="inp" value="0.04"></label>
+      <label>Szybkość stygnięcia<input id="simCR" class="inp" value="0.006"></label>
+      <label>Bezwładność<input id="simIn" class="inp" value="0.10"></label>
+    </div>
+    <button id="btnSimHeat" class="btn">Zastosuj sym. ogrzewania</button>
+    <h3>Symulacja pojedynczego czujnika</h3>
+    <div class="grid3">
+      <label>Czujnik<input id="simSenId" class="inp" placeholder="id"></label>
+      <label>Źródło
+        <select id="simSenSrc" class="inp">
+          <option value="0">Rzeczywisty</option>
+          <option value="1">Stała</option>
+          <option value="2">Narastający</option>
+          <option value="3">Nagły spadek</option>
+          <option value="4">Brak odpowiedzi</option>
+          <option value="5">Poza zakresem</option>
+          <option value="6">Wirtualny (model)</option>
+        </select>
+      </label>
+      <label>Wartość bazowa<input id="simSenBase" class="inp" value="20"></label>
+    </div>
+    <button id="btnSimSen" class="btn">Zastosuj sym. czujnika</button>
+  </section>
+
+  <!-- Logs + Diagnostics -->
+  <section class="card">
+    <h2>Diagnostyka</h2>
+    <pre id="diag" class="mono"></pre>
+    <h2>Logi / alarmy</h2>
+    <div id="log" class="log mono"></div>
+  </section>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>

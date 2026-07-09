@@ -1,0 +1,32 @@
+# main/ component: application code + embedded web assets.
+idf_component_register(
+    SRCS
+        "main.c"
+        "data_model.c"
+        "sensor_manager.c"
+        "simulation_manager.c"
+        "control_engine.c"
+        "heating_output.c"
+        "fault_manager.c"
+        "storage_manager.c"
+        "network_manager.c"
+        "web_ui_api.c"
+        "notification_manager.c"
+        "profile.c"
+    INCLUDE_DIRS
+        "."
+    EMBED_FILES
+        "../web/index.html"
+        "../web/style.css"
+        "../web/app.js"
+    REQUIRES
+        nvs_flash
+        joltwallet__littlefs
+        esp_wifi
+        esp_http_server
+        esp_event
+        esp_netif
+        esp_timer
+        lwip
+        driver
+)

@@ -1,0 +1,429 @@
+/* Frontend for the ESP32 heating controller. Vanilla JS, no deps. */
+const $ = (id) => document.getElementById(id);
+let lastState = null;
+
+async function api(path, opts) {
+  try {
+    const r = await fetch(path, opts || {});
+    const t = await r.text();
+    try { return JSON.parse(t); } catch { return t; }
+  } catch (e) { console.warn(path, e); return null; }
+}
+function post(path, body, isJson) {
+  return api(path, { method: 'POST', body: isJson ? JSON.stringify(body) : body,
+    headers: isJson ? { 'Content-Type': 'application/json' } : {} });
+}
+function fmtT(v) { return (v === null || v === undefined || v <= -98) ? '--' : v.toFixed(2) + '°C'; }
+function fmtUp(ms) {
+  const s = Math.floor(ms / 1000);
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+  return (d ? d + 'd ' : '') + h + 'h ' + m + 'm';
+}
+
+/* Dashboard only — safe to run every couple of seconds; it never touches form
+ * inputs, so ticks can't wipe unsaved edits (the old "checkboxes uncheck
+ * themselves" bug). */
+function renderDashboard(s) {
+  lastState = s;
+  const heat = $('heatingMark'), hlth = $('healthMark'), stt = $('stateMark');
+  heat.className = 'mark ' + (s.heating ? 'mark-on' : 'mark-off');
+  heat.textContent = s.heating ? '🔥 GRZEJE' : 'NIE GRZEJE';
+  hlth.className = 'mark ' + (s.health ? 'mark-ok' : 'mark-bad');
+  hlth.textContent = s.health ? '● Zdrowy' : '● Problem';
+  stt.textContent = s.state;
+  $('sysTemp').textContent = fmtT(s.system);
+  $('extTemp').textContent = fmtT(s.external);
+  $('sensOk').textContent = (s.sensors || []).filter(x => x.quality === 'OK' || x.quality === 'SIMULATED').length + '/' + (s.sensors||[]).length;
+  $('uptime').textContent = fmtUp(s.uptime);
+  $('simBanner').classList.toggle('hidden', !s.sim);
+  $('sensCount').textContent = (s.sensors || []).filter(x => !x.external).length;
+
+  /* Flash (LittleFS data partition) usage + wear indicator. */
+  const fb = $('flashBar'), fwEl = $('flashWear');
+  if (s.fs_total > 0) {
+    const pct = Math.min(100, Math.round(s.fs_used * 100 / s.fs_total));
+    $('flashV').textContent = (s.fs_used / 1024).toFixed(0) + ' / ' + (s.fs_total / 1024).toFixed(0) + ' KB (' + pct + '%)';
+    fb.style.width = pct + '%';
+    fb.className = 'pbar-fill' + (pct >= 90 ? ' err' : pct >= 70 ? ' warn' : '');
+
+    /* Flash wear estimate based on ESP32 NOR flash rated at 100k erase cycles. */
+    if (fwEl) {
+      const wp = s.flash_wear_pct || 0;
+      const ec = s.flash_erase_cycles || 0;
+      fwEl.textContent = 'Zużycie: ' + wp.toFixed(2) + '% (' + ec + ' / 100 000 cykli)';
+      fwEl.style.color = wp >= 1.0 ? 'var(--err)' : wp >= 0.5 ? 'var(--warn)' : 'var(--muted)';
+    }
+  } else {
+    $('flashV').textContent = '--';
+    fb.style.width = '0';
+    if (fwEl) fwEl.textContent = '';
+  }
+
+  const fi = $('faultInfo');
+  if (s.fault && s.fault !== 'NONE') { fi.classList.remove('hidden'); fi.textContent = 'Awaria: ' + s.fault; }
+  else fi.classList.add('hidden');
+
+  $('btnKill').textContent = s.disabled ? 'Włącz urządzenie grzewcze' : 'Wyłącz urządzenie grzewcze';
+  $('btnBoost').textContent = s.boost ? 'Anuluj BOOST' : 'Grzanie 5 min (BOOST)';
+}
+
+/* Full render: dashboard + editable forms. Used on first load and after a
+ * save (so saved values are reflected back into the forms). */
+function render(s) {
+  renderDashboard(s);
+  renderSensors(s.sensors || []);
+  if (!profileEdited) renderProfile(s.profile);
+  renderModes(s);
+}
+
+/* Live update of the non-input sensor cells (quality + effective temp) only,
+ * so typing into a row is never wiped by the periodic refresh. */
+function updateSensorCells(sensors) {
+  const tb = $('sensorsTable').querySelector('tbody');
+  if (!tb) return;
+  sensors.forEach(sx => {
+    const row = tb.querySelector('tr[data-sid="' + sx.id + '"]');
+    if (!row) return;
+    const q = row.querySelector('.qcell');
+    if (q) { q.className = 'qcell q-' + sx.quality; q.textContent = sx.quality + (sx.window ? ' ⊗' : ''); }
+    const e = row.querySelector('.ecell');
+    if (e) e.textContent = fmtT(sx.eff);
+  });
+}
+
+function renderSensors(sensors) {
+  const tb = $('sensorsTable').querySelector('tbody');
+  tb.innerHTML = '';
+  sensors.forEach(sx => {
+    const tr = document.createElement('tr');
+    tr.dataset.sid = sx.id;
+    tr.innerHTML = `
+      <td>${sx.id}${sx.external ? ' ★' : ''}${sx.sim ? ' SIM' : ''}</td>
+      <td><input class="name" value="${sx.name}"></td>
+      <td><input type="checkbox" ${sx.active ? 'checked' : ''}></td>
+      <td><input type="number" step="0.01" value="${sx.weight}"></td>
+      <td><input type="number" step="0.1" value="${sx.calib}"></td>
+      <td><input type="number" step="0.1" value="${sx.comfort}"></td>
+      <td class="qcell q-${sx.quality}">${sx.quality}${sx.window ? ' ⊗' : ''}</td>
+      <td class="ecell">${fmtT(sx.eff)}</td>
+      <td><button class="btn" style="padding:4px 8px" data-id="${sx.id}">Zapisz</button>${sx.window ? `<button class="btn" style="padding:4px 8px;margin-left:4px" data-restore="${sx.id}">Przywróć</button>` : ''}</td>`;
+    const inputs = tr.querySelectorAll('input');
+    tr.querySelector('button[data-id]').onclick = () => {
+      const body = { name: inputs[0].value, active: inputs[1].checked,
+        weight: parseFloat(inputs[2].value), calib: parseFloat(inputs[3].value),
+        comfort: parseFloat(inputs[4].value) };
+      post('/api/sensor?id=' + sx.id, body, true).then(() => refresh());
+    };
+    const rb = tr.querySelector('button[data-restore]');
+    if (rb) rb.onclick = () => post('/api/sensor/restore?id=' + sx.id, '').then(() => refresh());
+    tb.appendChild(tr);
+  });
+}
+
+let profileEdited = false;
+function renderProfile(p) {
+  const g = $('profileGrid'); g.innerHTML = '';
+  (p || []).forEach((h, idx) => {
+    const d = document.createElement('div'); d.className = 'ph';
+    d.innerHTML = `<div class="h">${idx}:00</div>
+      <input data-h="${idx}" data-k="on" placeholder="ON" value="${h[0]}">
+      <input data-h="${idx}" data-k="off" placeholder="OFF" value="${h[1]}">`;
+    d.querySelectorAll('input').forEach(i => i.oninput = () => profileEdited = true);
+    g.appendChild(d);
+  });
+}
+function collectProfile() {
+  const arr = [];
+  $('profileGrid').querySelectorAll('[data-h]').forEach(inp => {
+    const h = +inp.dataset.h, k = inp.dataset.k;
+    if (!arr[h]) arr[h] = [0, 0];
+    arr[h][k === 'on' ? 0 : 1] = parseFloat(inp.value);
+  });
+  return arr;
+}
+
+function renderModes(s) {
+  if (!profileEdited) {
+    $('pumpEn').checked = s.pump.enabled; $('pumpImpulse').value = s.pump.impulse;
+    $('pumpPeriod').value = s.pump.period; $('pumpTotal').value = s.pump.total;
+    $('emEn').checked = s.emergency.enabled; $('emOn').value = s.emergency.on; $('emPeriod').value = s.emergency.period;
+    $('simHeat').checked = s.sim_heating; $('simMixed').checked = false;
+    $('simAccel').checked = s.sim_accel;
+    /* protection limits */
+    if ($('limGrace')) $('limGrace').value = s.fault_grace_sec || 300;
+    if ($('limMaxOn')) $('limMaxOn').value = s.max_on_sec || 14400;
+    if ($('limBreak')) $('limBreak').value = s.max_on_break_sec || 600;
+  }
+}
+
+async function refresh(live) {
+  const s = await api('/api/state');
+  if (!s) return;
+  if (live) { renderDashboard(s); updateSensorCells(s.sensors || []); }
+  else render(s);
+}
+
+async function loadDiag() {
+  const d = await api('/api/diagnostics');
+  if (d) $('diag').textContent = JSON.stringify(d, null, 2);
+}
+
+async function loadLog() {
+  const l = await api('/api/log');
+  if (l) $('log').textContent = l.map(e => `[${new Date(e[0]*1000).toLocaleString()}] ${e[1]}/${e[2]} ${e[3]}`).join('\n');
+}
+
+/* ---- charts ---- */
+function drawSeries(cv, series, labels, colors) {
+  const dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth || (cv.parentElement && cv.parentElement.clientWidth) || 600;
+  const H = +cv.getAttribute('height') || 220;   /* stable logical height (attribute) */
+  cv.width = Math.round(W * dpr);
+  cv.height = Math.round(H * dpr);
+  cv.style.height = H + 'px';                     /* lock display size so it can't grow */
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const n = Math.max(1, ...series.map(s => s.length));   /* spread points across width */
+  let lo = Infinity, hi = -Infinity, pts = 0;
+  series.forEach(s => s.forEach(v => { if (v !== null && v > -98) { lo = Math.min(lo, v); hi = Math.max(hi, v); pts++; } }));
+  if (!isFinite(lo)) { lo = 0; hi = 30; }
+  if (hi - lo < 1) { hi += 1; lo -= 1; }
+  const pad = 28;
+  const x = (i) => pad + (n > 1 ? i * (W - pad - 8) / (n - 1) : 0);
+  const y = (v) => H - 18 - (v - lo) * (H - 30) / (hi - lo);
+  // grid
+  ctx.strokeStyle = '#262b35'; ctx.fillStyle = '#8a93a3'; ctx.font = '10px monospace';
+  for (let g = 0; g < 4; g++) { const yy = 12 + g * (H - 30) / 3; ctx.beginPath(); ctx.moveTo(pad, yy + 6); ctx.lineTo(W - 8, yy + 6); ctx.stroke(); const val = hi - g * (hi - lo) / 3; ctx.fillText(val.toFixed(1), 2, yy + 9); }
+  if (pts === 0) {
+    ctx.fillStyle = '#8a93a3'; ctx.font = '12px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('brak danych (nagrywanie co 60 s)', W / 2, H / 2); ctx.textAlign = 'start';
+  } else {
+    series.forEach((s, si) => {
+      ctx.strokeStyle = colors[si % colors.length]; ctx.lineWidth = 1.4; ctx.beginPath();
+      let first = true;
+      s.forEach((v, i) => { if (v === null || v <= -98) { first = true; return; } const px = x(i), py = y(v); if (first) { ctx.moveTo(px, py); first = false; } else ctx.lineTo(px, py); });
+      ctx.stroke();
+    });
+  }
+  // legend
+  ctx.font = '11px sans-serif'; let lx = pad;
+  labels.forEach((lb, i) => { ctx.fillStyle = colors[i % colors.length]; ctx.fillRect(lx, 2, 10, 10); ctx.fillStyle = '#e7ecf3'; ctx.fillText(lb, lx + 14, 11); lx += lb.length * 6 + 28; });
+}
+
+/* Time-based 24h chart: X is real wall-clock (now-24h .. now) so the trace
+ * scrolls left as time advances; system + external plotted by timestamp, with
+ * the daily profile ON/OFF band overlaid and an hour scale on the X axis. */
+let samples24 = [];   /* cached rows [ts,sys,ext,heat,state,s0..s5] */
+
+function render24(cv, rows, profile, sensors) {
+  const winH = chartZoomH;  /* current zoom level */
+  const dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth || (cv.parentElement && cv.parentElement.clientWidth) || 600;
+  const H = +cv.getAttribute('height') || 220;
+  cv.width = Math.round(W * dpr);
+  cv.height = Math.round(H * dpr);
+  cv.style.height = H + 'px';
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  const padL = 32, padR = 8, padT = 16, padB = 20;
+  let t1 = 0;
+  rows.forEach(d => { if (d[0] > t1) t1 = d[0]; });
+  if (!t1) t1 = Date.now() / 1000;
+  const t0 = t1 - winH * 3600;
+
+  /* y-range from sample values AND profile thresholds so both fit. */
+  let lo = Infinity, hi = -Infinity, pts = 0;
+  const consider = (v) => { if (v !== null && v !== undefined && v > -98) { lo = Math.min(lo, v); hi = Math.max(hi, v); } };
+  rows.forEach(d => {
+    if (d[0] < t0) return;
+    let any = false;
+    consider(d[1]); consider(d[2]);
+    if (d[1] > -98 || d[2] > -98) any = true;
+    for (let c = 5; c < d.length; c++) { consider(d[c]); if (d[c] > -98) any = true; }
+    if (any) pts++;
+  });
+  if (profile && profile.length === 24) profile.forEach(h => { consider(h[0]); consider(h[1]); });
+  if (!isFinite(lo)) { lo = 0; hi = 30; }
+  if (hi - lo < 1) { hi += 1; lo -= 1; }
+  const m = (hi - lo) * 0.08; lo -= m; hi += m;
+
+  const X = (t) => padL + (t - t0) * (W - padL - padR) / (t1 - t0);
+  const Y = (v) => H - padB - (v - lo) * (H - padT - padB) / (hi - lo);
+
+  /* Y grid + temperature labels. */
+  ctx.font = '10px monospace';
+  for (let g = 0; g <= 3; g++) {
+    const val = hi - g * (hi - lo) / 3, yy = Y(val);
+    ctx.strokeStyle = '#262b35'; ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(W - padR, yy); ctx.stroke();
+    ctx.fillStyle = '#8a93a3'; ctx.fillText(val.toFixed(1), 2, yy + 3);
+  }
+
+  /* X axis: tick interval scales with zoom level. */
+  ctx.textAlign = 'center';
+  const tickSec = winH <= 1 ? 900 : winH <= 6 ? 3600 : 3 * 3600;  /* 15 min / 1 h / 3 h */
+  const firstTick = Math.ceil(t0 / tickSec) * tickSec;
+  for (let tt = firstTick; tt <= t1; tt += tickSec) {
+    const xx = X(tt);
+    ctx.strokeStyle = '#1c2028'; ctx.beginPath(); ctx.moveTo(xx, padT); ctx.lineTo(xx, H - padB); ctx.stroke();
+    const d = new Date(tt * 1000);
+    const label = winH <= 1 ? (d.getHours()<10?'0':'')+d.getHours()+':'+(d.getMinutes()<10?'0':'')+d.getMinutes()
+                : (d.getHours()<10?'0':'')+d.getHours()+':00';
+    ctx.fillStyle = '#8a93a3'; ctx.fillText(label, xx, H - 6);
+  }
+  ctx.textAlign = 'start';
+
+  /* Profile overlay: ON/OFF band + stepped thresholds, per hour of day. */
+  if (profile && profile.length === 24) {
+    const h0 = Math.floor(t0 / 3600) * 3600;
+    ctx.fillStyle = 'rgba(245,158,11,0.07)';
+    for (let tt = h0; tt < t1; tt += 3600) {
+      const hr = new Date(tt * 1000).getHours();
+      const xs = X(Math.max(tt, t0)), xe = X(Math.min(tt + 3600, t1));
+      const yOn = Y(profile[hr][0]), yOff = Y(profile[hr][1]);
+      ctx.fillRect(xs, yOff, xe - xs, yOn - yOff);
+    }
+    const step = (idx, color) => {
+      ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.setLineDash([4, 3]); ctx.beginPath();
+      let started = false;
+      for (let tt = h0; tt < t1; tt += 3600) {
+        const hr = new Date(tt * 1000).getHours();
+        const yy = Y(profile[hr][idx]);
+        const xs = X(Math.max(tt, t0)), xe = X(Math.min(tt + 3600, t1));
+        if (!started) { ctx.moveTo(xs, yy); started = true; } else ctx.lineTo(xs, yy);
+        ctx.lineTo(xe, yy);
+      }
+      ctx.stroke(); ctx.setLineDash([]);
+    };
+    step(0, 'rgba(245,158,11,0.55)');   /* ON threshold  */
+    step(1, 'rgba(245,158,11,0.85)');   /* OFF threshold */
+  }
+
+  const SENSOR_COLORS = ['#a855f7', '#ec4899', '#14b8a6', '#eab308', '#f97316', '#38bdf8'];
+  const plot = (getV, color, width) => {
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.beginPath();
+    let first = true;
+    rows.forEach(d => {
+      const v = getV(d);
+      if (d[0] < t0 || v === null || v === undefined || v <= -98) { first = true; return; }
+      const px = X(d[0]), py = Y(v);
+      if (first) { ctx.moveTo(px, py); first = false; } else ctx.lineTo(px, py);
+    });
+    ctx.stroke();
+  };
+
+  const legend = [];
+  if (pts === 0) {
+    ctx.fillStyle = '#8a93a3'; ctx.font = '12px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('brak danych (nagrywanie co 60 s)', W / 2, H / 2); ctx.textAlign = 'start';
+  } else {
+    /* per-sensor lines first (thin), then external and system on top (thick).
+     * per_sensor[i] lives at sample column 5+i, matching the internal sensor
+     * order in /api/state. */
+    const internal = (sensors || []).filter(s => !s.external).slice(0, 6);
+    internal.forEach((s, i) => {
+      if (!visibleSensors.has(s.id)) return;   /* skip hidden sensor lines */
+      const col = SENSOR_COLORS[i % SENSOR_COLORS.length];
+      plot(d => d[5 + i], col, 1);
+    });
+    /* Legend includes internal sensors (all, even hidden — toggle via checkboxes above). */
+    internal.forEach((s, i) => {
+      const col = SENSOR_COLORS[i % SENSOR_COLORS.length];
+      legend.push([s.name || ('S' + (i + 1)), col]);
+    });
+    plot(d => d[2], '#22c55e', 1.4); legend.push(['zewn.', '#22c55e']);
+    plot(d => d[1], '#3b82f6', 1.8); legend.push(['system', '#3b82f6']);
+  }
+  legend.push(['profil ON/OFF', '#f59e0b']);
+
+  /* legend */
+  ctx.font = '11px sans-serif';
+  let lx = padL;
+  legend.forEach(([lb, col]) => { ctx.fillStyle = col; ctx.fillRect(lx, 2, 10, 10); ctx.fillStyle = '#e7ecf3'; ctx.fillText(lb, lx + 14, 11); lx += lb.length * 6 + 26; });
+}
+
+function draw24h() {
+  render24($('chart24'), samples24, lastState && lastState.profile, lastState && lastState.sensors);
+}
+
+async function load24h() {
+  samples24 = await api('/api/samples') || [];
+  draw24h();
+}
+
+async function loadDaily() {
+  const data = await api('/api/daily') || [];
+  const sys = data.map(d => d[1]), ext = data.map(d => d[2]);
+  drawSeries($('chartDaily'), [sys, ext], ['system (śr. dzienna)', 'zewn. (śr. dzienna)'], ['#3b82f6', '#f59e0b']);
+}
+
+/* ---- zoom + sensor toggles ---- */
+let chartZoomH = 24;
+let visibleSensors = new Set();
+
+function populateSensorToggles(sensors) {
+  const div = $('sensorToggles'); if (!div) return;
+  const internal = (sensors || []).filter(s => !s.external);
+  if (!visibleSensors.size) internal.forEach(s => visibleSensors.add(s.id));
+  div.innerHTML = '';
+  const COLS = ['#a855f7','#ec4899','#14b8a6','#eab308','#f97316','#38bdf8'];
+  internal.forEach((s, i) => {
+    const col = COLS[i % COLS.length];
+    const lb = document.createElement('label');
+    lb.style.cssText = 'font-size:12px;margin:0 10px 0 0;cursor:pointer;display:inline-flex;align-items:center;gap:4px;color:' + col;
+    lb.innerHTML = '<input type="checkbox" ' + (visibleSensors.has(s.id) ? 'checked' : '') + '><span style="display:inline-block;width:10px;height:10px;background:' + col + ';border-radius:2px"></span>' + (s.name || ('S' + (i + 1)));
+    lb.querySelector('input').onchange = function () {
+      this.checked ? visibleSensors.add(s.id) : visibleSensors.delete(s.id);
+      draw24h();
+    };
+    div.appendChild(lb);
+  });
+}
+
+/* ---- wiring ---- */
+$('btnBoost').onclick = () => post('/api/boost?on=' + (lastState && lastState.boost ? 0 : 1), '').then(() => refresh());
+$('btnSensInc').onclick = () => { const n = lastState ? (lastState.sensors||[]).filter(x=>!x.external).length + 1 : 1; post('/api/sensors/count?n=' + Math.min(6, n), '').then(() => refresh()); };
+$('btnSensDec').onclick = () => { const n = lastState ? (lastState.sensors||[]).filter(x=>!x.external).length - 1 : 1; post('/api/sensors/count?n=' + Math.max(1, n), '').then(() => refresh()); };
+$('btnKill').onclick = () => post('/api/heating?disable=' + (lastState && lastState.disabled ? 0 : 1), '').then(() => refresh());
+$('btnFault').onclick = () => post('/api/fault/clear', '').then(() => refresh());
+$('btnPump').onclick = () => post('/api/pump', { enabled: $('pumpEn').checked, impulse: +$('pumpImpulse').value, period: +$('pumpPeriod').value, total: +$('pumpTotal').value }, true).then(() => refresh());
+$('btnEm').onclick = () => post('/api/emergency', { enabled: $('emEn').checked, on: +$('emOn').value, period: +$('emPeriod').value }, true).then(() => refresh());
+$('btnNet').onclick = () => post('/api/network', { sta_mode: $('netSta').checked, ssid: $('netSsid').value, pass: $('netPass').value }, true).then(() => refresh());
+$('btnNotify').onclick = () => post('/api/notify', { email_enabled: $('nEmail').checked, email_to: $('nEmailTo').value, smtp_host: $('nSmtpHost').value, smtp_user: $('nSmtpUser').value, smtp_pass: $('nSmtpPass').value, sms_enabled: $('nSms').checked, sms_phone: $('nSmsPhone').value, sms_gateway: $('nSmsGw').value }, true).then(() => refresh());
+$('btnSimHeat').onclick = () => post('/api/sim/heating', { enabled: $('simHeat').checked, mixed: $('simMixed').checked, accel: $('simAccel').checked, mode: +$('simMode').value, heat_rate: +$('simHR').value, cool_rate: +$('simCR').value, inertia: +$('simIn').value }, true).then(() => refresh()).then(load24h);
+$('btnSimSen').onclick = () => post('/api/sim/sensor?id=' + $('simSenId').value, { src: +$('simSenSrc').value, base: +$('simSenBase').value, rate: 0.1, target: 0 }, true).then(() => refresh()).then(load24h);
+$('btnProfileApply').onclick = () => { profileEdited = false; post('/api/profile', collectProfile(), true).then(() => refresh()); };
+$('btnProfileFileSave').onclick = () => { post('/api/profile/file?name=' + encodeURIComponent($('profileName').value || 'default') + '&op=save', '').then(() => refresh()); };
+$('btnProfileFileLoad').onclick = () => { profileEdited = false; post('/api/profile/file?name=' + encodeURIComponent($('profileName').value || 'default') + '&op=load', '').then(() => refresh()); };
+
+$('btnLimits').onclick = () => post('/api/limits', {
+  fault_grace_sec: +$('limGrace').value,
+  max_on_sec: +$('limMaxOn').value,
+  max_on_break_sec: +$('limBreak').value
+}, true).then(() => refresh());
+
+/* Collapsible config sections: clicking the header toggles its card. */
+document.querySelectorAll('.card-toggle').forEach(h => {
+  h.onclick = () => h.parentElement.classList.toggle('collapsed');
+});
+
+/* Zoom buttons. */
+document.querySelectorAll('.zoom-btn').forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll('.zoom-btn').forEach(x => x.classList.remove('sel'));
+    b.classList.add('sel');
+    chartZoomH = +b.dataset.h;
+    draw24h();
+  };
+});
+
+refresh().then(load24h).then(() => populateSensorToggles(lastState && lastState.sensors)); loadDiag(); loadLog(); loadDaily();
+setInterval(() => refresh(true), 2000);
+setInterval(loadDiag, 5000);
+setInterval(loadLog, 10000);
+/* Refetch history often enough that the accelerated (x10) run visibly scrolls. */
+setInterval(load24h, 8000);
+setInterval(loadDaily, 60000);
+window.addEventListener('resize', draw24h);

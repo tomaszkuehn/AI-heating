@@ -1,0 +1,43 @@
+/**
+ * Global hardware / wiring configuration.
+ * Centralised so it can be retargeted without touching module logic.
+ */
+#pragma once
+
+#include "data_model.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* ---- GPIO ---- */
+#define HE_GPIO_HEATING         GPIO_NUM_16   /* relay line to the furnace   */
+#define HE_GPIO_NET_RESET_BTN   GPIO_NUM_0    /* BOOT button: hold to reset  */
+#define HE_NET_RESET_HOLD_MS    5000          /* 5s hold => network reset    */
+
+/* ---- Sensor interface (external board over UART) ---- */
+#define HE_SENSOR_UART          UART_NUM_1
+#define HE_SENSOR_UART_TX       GPIO_NUM_17
+#define HE_SENSOR_UART_RX       GPIO_NUM_18
+#define HE_SENSOR_BAUD          115200
+#define HE_SENSOR_BUF_SIZE      256
+
+/* ---- Control loop timing ---- */
+#define HE_CONTROL_TICK_MS      1000          /* control engine period       */
+#define HE_SENSOR_POLL_MS       1000          /* how often we poll the iface */
+#define HE_BOOST_DURATION_SEC   300           /* 5-minute boost              */
+#define HE_SIM_TIME_SCALE       10            /* x10 fast-forward in sim mode */
+
+/* ---- Hysteresis / protection defaults (spec 5.2) ---- */
+#define HE_MIN_ON_SEC           120
+#define HE_MIN_OFF_SEC          120
+#define HE_MAX_ON_SEC           (3600 * 4)
+#define HE_ANTIOSC_LOCK_SEC     180
+
+/* ---- Network defaults (spec 12) ---- */
+#define HE_DEFAULT_AP_SSID      "ESP"
+#define HE_DEFAULT_AP_PASS      "12345678"    /* WPA2 requires >= 8 chars */
+
+#ifdef __cplusplus
+}
+#endif
