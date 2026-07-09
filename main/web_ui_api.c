@@ -420,6 +420,26 @@ static esp_err_t h_notify(httpd_req_t *req)
     CFG_RET(send_text(req, "ok", 200));
 }
 
+/* ---- /api/notify/test (POST) ---- */
+static esp_err_t h_notify_test(httpd_req_t *req)
+{
+    CFG_LOCK();
+    notify_cfg_t cfg_copy = s_cfg->notify;  /* snapshot under lock */
+    he_config_unlock();
+    char *diag = notification_test_email(&cfg_copy);
+    if (!diag) { send_text(req, "internal error", 500); return ESP_FAIL; }
+    /* Return as JSON so the frontend can display it nicely. */
+    char buf[1200];
+    int n = snprintf(buf, sizeof(buf), "{\"result\":\"%s\"}", diag);
+    free(diag);
+    /* Escape any literal quotes in the diag for JSON safety. */
+    for (int i = 0; i < n && i < (int)sizeof(buf); i++) {
+        if (buf[i] == '\n') buf[i] = ' ';  /* single-line JSON */
+    }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, buf, n);
+}
+
 /* ---- /api/network (POST) ---- */
 static esp_err_t h_network(httpd_req_t *req)
 {
@@ -647,6 +667,7 @@ static httpd_uri_t regs[] = {
     { .uri = "/api/pump",    .method = HTTP_POST, .handler = h_pump,         .user_ctx = NULL },
     { .uri = "/api/emergency", .method = HTTP_POST, .handler = h_emergency,  .user_ctx = NULL },
     { .uri = "/api/notify",  .method = HTTP_POST, .handler = h_notify,       .user_ctx = NULL },
+    { .uri = "/api/notify/test", .method = HTTP_POST, .handler = h_notify_test, .user_ctx = NULL },
     { .uri = "/api/network", .method = HTTP_POST, .handler = h_network,      .user_ctx = NULL },
     { .uri = "/api/sim/sensor",  .method = HTTP_POST, .handler = h_sim_sensor,  .user_ctx = NULL },
     { .uri = "/api/sim/heating", .method = HTTP_POST, .handler = h_sim_heating, .user_ctx = NULL },

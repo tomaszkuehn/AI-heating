@@ -13,6 +13,22 @@
 
 static const char *TAG = "notify";
 
+/* Diagnostic buffer for the last SMTP attempt. */
+static char s_diag[1024];
+static int  s_diag_len = 0;
+
+static void diag_append(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void diag_append(const char *fmt, ...)
+{
+    if (s_diag_len >= (int)sizeof(s_diag) - 80) return;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(s_diag + s_diag_len, sizeof(s_diag) - s_diag_len, fmt, ap);
+    va_end(ap);
+    if (n > 0) s_diag_len += n;
+    if (s_diag_len >= (int)sizeof(s_diag) - 1) s_diag_len = (int)sizeof(s_diag) - 1;
+}
+
 /* base64-encode `in` (NUL-terminated) into `out`; returns out. */
 static char *b64(const char *in, char *out, size_t outlen)
 {
@@ -79,24 +95,27 @@ static bool smtp_send(const notify_cfg_t *c, const char *subject, const char *bo
     const struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
     struct addrinfo *res = NULL;
     if (getaddrinfo(host, NULL, &hints, &res) != 0 || !res) {
+        diag_append("FAIL: cannot resolve host %s\n", host);
         ESP_LOGW(TAG, "SMTP: cannot resolve %s", host);
         return false;
     }
     int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) { freeaddrinfo(res); return false; }
+    if (sock < 0) { diag_append("FAIL: socket() error\n"); freeaddrinfo(res); return false; }
     struct sockaddr_in dest = *(struct sockaddr_in *)res->ai_addr;
     dest.sin_port = htons(port);
     int to_ms = 4000; setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &to_ms, sizeof(to_ms));
     setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &to_ms, sizeof(to_ms));
+    diag_append("Connecting to %s:%d ...\n", host, port);
     if (connect(sock, (struct sockaddr *)&dest, sizeof(dest)) != 0) {
+        diag_append("FAIL: connect refused/timeout\n");
         ESP_LOGW(TAG, "SMTP: connect failed");
         close(sock); freeaddrinfo(res); return false;
     }
     freeaddrinfo(res);
 
     char rx[256]; char tx[512];
-    #define RECV() do { int n = recv(sock, rx, sizeof(rx)-1, 0); if (n<=0) goto done; rx[n]=0; } while (0)
-    #define SEND(s) do { int L=strlen(s); if (send(sock,s,L,0)!=L) goto done; } while (0)
+    #define RECV() do { int n = recv(sock, rx, sizeof(rx)-1, 0); if (n<=0) { diag_append("RECV failed (timeout/close)\n"); goto done; } rx[n]=0; diag_append("S: %s", rx); } while (0)
+    #define SEND(s) do { int L=strlen(s); if (send(sock,s,L,0)!=L) { diag_append("SEND failed\n"); goto done; } diag_append("C: %s", s); } while (0)
 
     /* Sanitised header fields (config-supplied, must not inject CRLF). */
     char rcpt[64], subj[64], msg[256], b64buf[128];
@@ -120,10 +139,12 @@ static bool smtp_send(const notify_cfg_t *c, const char *subject, const char *bo
     SEND(tx); RECV();
     SEND("QUIT\r\n");
     close(sock);
+    diag_append("OK: email accepted by server\n");
     ESP_LOGI(TAG, "email sent to %s: %s", rcpt, subj);
     return true;
 done:
     close(sock);
+    diag_append("FAIL: SMTP transaction incomplete\n");
     return false;
 #undef RECV
 #undef SEND
@@ -186,6 +207,7 @@ void notification_send_alert(const notify_cfg_t *cfg, fault_class_t f,
     if (!cfg || !message) return;
     char subject[64];
     snprintf(subject, sizeof(subject), "[Heating] fault %d", (int)f);
+    s_diag[0] = '\0'; s_diag_len = 0;
     if (cfg->email_enabled && cfg->email_to[0]) {
         if (!smtp_send(cfg, subject, message))
             ESP_LOGW(TAG, "email send failed");
@@ -194,4 +216,16 @@ void notification_send_alert(const notify_cfg_t *cfg, fault_class_t f,
         if (!sms_send(cfg, message))
             ESP_LOGW(TAG, "sms send failed");
     }
+}
+
+char *notification_test_email(const notify_cfg_t *cfg)
+{
+    if (!cfg || !cfg->smtp_host[0]) return strdup("FAIL: brak serwera SMTP w konfiguracji");
+    if (!cfg->email_to[0]) return strdup("FAIL: brak adresu odbiorcy (email_to)");
+    s_diag[0] = '\0'; s_diag_len = 0;
+    bool ok = smtp_send(cfg, "[Heating] TEST", "Testowy e-mail z kontrolera ogrzewania ESP32.");
+    /* s_diag already filled by smtp_send; return a copy. */
+    size_t len = strlen(s_diag);
+    if (len == 0) return strdup(ok ? "OK (brak szczegolow)" : "FAIL (brak szczegolow)");
+    return strdup(s_diag);
 }

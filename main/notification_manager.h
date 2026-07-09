@@ -20,6 +20,10 @@ void notification_init(void);
 void notification_send_alert(const notify_cfg_t *cfg, fault_class_t f,
                              const char *message);
 
+/* Test email delivery using the supplied config. Returns a malloc'd diagnostic
+ * string the caller must free(), or NULL on immediate failure. */
+char *notification_test_email(const notify_cfg_t *cfg);
+
 #ifdef __cplusplus
 }
 #endif

@@ -335,6 +335,40 @@ awaryjny → awaria → histereza normalna. Każda **zmiana stanu** jest logowan
   HTTP (`sms_enabled` + telefon). Temat: `[Heating] fault N`, treść = opis
   awarii. Błędy wysyłki są logowane, ale nie blokują sterowania.
 
+#### Diagnostyka i testowanie e-mail (przycisk „Testuj e-mail")
+
+Karta Powiadomienia zawiera przycisk **„Testuj e-mail"** — zapisuje aktualną
+konfigurację SMTP, wysyła testową wiadomość i pokazuje **pełny log rozmowy
+SMTP** (każda komenda `C:` i odpowiedź `S:` serwera). Dzięki temu widać
+dokładnie, na którym etapie występuje problem.
+
+**Ograniczenia implementacji SMTP:**
+- ESP32 wysyła SMTP **bez szyfrowania** (plain-text TCP, zwykle port 25).
+- **Nie obsługuje TLS/SSL** — publiczne serwery wymagające STARTTLS (Gmail,
+  Outlook.com, WP, OVH, Home.pl) **nie zadziałają bezpośrednio**.
+- Działa tylko w trybie **STA** (klient routera) — w trybie AP ESP32 nie ma
+  dostępu do internetu.
+
+**Rekomendowane rozwiązanie dla Gmaila/Outlooka:** lokalny pośrednik SMTP
+(np. `msmtp` lub `postfix` na Raspberry Pi), który nasłuchuje plain-text
+na porcie 25 i forwarduje przez TLS do właściwego serwera. W polu „Serwer
+SMTP" w ESP32 wpisz adres IP tego pośrednika.
+
+**Pole „Serwer SMTP"** akceptuje format `host` lub `host:port` (np.
+`192.168.1.10:25`).
+
+**Najczęstsze błędy (widoczne w logu diagnostycznym):**
+
+| Komunikat | Przyczyna | Rozwiązanie |
+|---|---|---|
+| `FAIL: cannot resolve host` | Nieprawidłowa nazwa hosta lub brak DNS | Użyj adresu IP |
+| `FAIL: connect refused/timeout` | Zły port, firewall lub serwer nie nasłuchuje | Sprawdź port (zwykle 25 dla plain-text) |
+| `RECV failed (timeout/close)` | Serwer przerwał połączenie (często wymaga TLS) | Potrzebny pośrednik bez TLS |
+| `OK: email accepted by server` | Sukces — mail dotarł do serwera SMTP | Sprawdź spam w skrzynce odbiorcy |
+
+**Testowe powiadomienie** można też wywołać ręcznie przez
+`POST /api/notify/test` (zwraca JSON `{"result":"..."}` z logiem SMTP).
+
 ## Tryb symulacji (spec pkt 8)
 
 W UI oznaczony bannerem/kolorem. Możliwa symulacja pojedynczych czujników
