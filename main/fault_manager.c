@@ -142,6 +142,10 @@ void fault_manager_observe(const fault_context_t *ctx)
     if (ctx->network_up && s_fault == FAULT_NETWORK) {
         fault_manager_clear();
     }
+    /* Clear sensor-interface fault when at least one sensor recovers. */
+    if (s_fault == FAULT_SENSOR_IFACE && ctx->healthy_sensors > 0) {
+        fault_manager_clear();
+    }
     /* Clear heating faults when heating becomes effective again. */
     if ((s_fault == FAULT_NO_HEAT_RISE || s_fault == FAULT_LOW_HEAT_RISE) &&
         ctx->heating_active && !he_isnan(ctx->system_temp) && !he_isnan(s_heat_start_temp)) {
