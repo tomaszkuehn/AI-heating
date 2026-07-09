@@ -63,7 +63,15 @@ function renderDashboard(s) {
   if (s.fault && s.fault !== 'NONE') { fi.classList.remove('hidden'); fi.textContent = 'Awaria: ' + s.fault; }
   else fi.classList.add('hidden');
 
-  $('btnKill').textContent = s.disabled ? 'Włącz urządzenie grzewcze' : 'Wyłącz urządzenie grzewcze';
+  /* Boiler status: green = enabled (normal), red = disabled (killed). */
+  const bs = $('boilerStatus');
+  if (bs) {
+    bs.textContent = s.disabled ? 'Wyłączony' : 'Włączony';
+    bs.style.color = s.disabled ? 'var(--err)' : 'var(--ok)';
+  }
+  /* Kill button: toggle label + color, moved to end of button row. */
+  $('btnKill').textContent = s.disabled ? 'Włącz ogrzewanie' : 'Wyłącz ogrzewanie';
+  $('btnKill').className = s.disabled ? 'btn' : 'btn btn-danger';
   $('btnBoost').textContent = s.boost ? 'Anuluj BOOST' : 'Grzanie 5 min (BOOST)';
 
   /* Heating time in the current zoom window. */
@@ -484,7 +492,32 @@ function populateSensorToggles(sensors) {
 $('btnBoost').onclick = () => post('/api/boost?on=' + (lastState && lastState.boost ? 0 : 1), '').then(() => refresh());
 $('btnSensInc').onclick = () => { const n = lastState ? (lastState.sensors||[]).filter(x=>!x.external).length + 1 : 1; post('/api/sensors/count?n=' + Math.min(6, n), '').then(() => refresh()); };
 $('btnSensDec').onclick = () => { const n = lastState ? (lastState.sensors||[]).filter(x=>!x.external).length - 1 : 1; post('/api/sensors/count?n=' + Math.max(1, n), '').then(() => refresh()); };
-$('btnKill').onclick = () => post('/api/heating?disable=' + (lastState && lastState.disabled ? 0 : 1), '').then(() => refresh());
+/* Kill button: show inline confirmation, then toggle. */
+let killPending = false;
+$('btnKill').onclick = () => {
+  if (killPending) return; /* already waiting for confirmation */
+  const disabling = !(lastState && lastState.disabled);
+  if (!disabling) {
+    /* Re-enabling is safe, no confirmation needed. */
+    post('/api/heating?disable=0', '').then(() => refresh());
+    return;
+  }
+  /* Show inline confirmation next to the button. */
+  killPending = true;
+  $('killConfirm').style.display = 'inline-flex';
+  $('btnKill').style.opacity = '0.5';
+};
+$('killYes').onclick = () => {
+  post('/api/heating?disable=1', '').then(() => refresh());
+  killPending = false;
+  $('killConfirm').style.display = 'none';
+  $('btnKill').style.opacity = '';
+};
+$('killNo').onclick = () => {
+  killPending = false;
+  $('killConfirm').style.display = 'none';
+  $('btnKill').style.opacity = '';
+};
 $('btnFault').onclick = () => post('/api/fault/clear', '').then(() => refresh());
 $('btnPump').onclick = () => post('/api/pump', { enabled: $('pumpEn').checked, impulse: +$('pumpImpulse').value, period: +$('pumpPeriod').value, total: +$('pumpTotal').value }, true).then(() => refresh());
 $('btnEm').onclick = () => post('/api/emergency', { enabled: $('emEn').checked, on: +$('emOn').value, period: +$('emPeriod').value }, true).then(() => refresh());
