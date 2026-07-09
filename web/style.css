@@ -43,7 +43,8 @@ main{max-width:980px;margin:0 auto;padding:14px;display:flex;flex-direction:colu
 .inp{background:#11151d;border:1px solid var(--bd);color:var(--text);border-radius:8px;padding:8px;width:100%;font-size:14px}
 label{display:block;margin:6px 0;font-size:14px;color:var(--muted)}
 label input,label select{margin-top:4px}
-.tbl{width:100%;border-collapse:collapse;font-size:13px}
+.tbl-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.tbl{width:100%;border-collapse:collapse;font-size:13px;min-width:720px}
 .tbl th,.tbl td{padding:6px 4px;border-bottom:1px solid var(--bd);text-align:center}
 .tbl th{color:var(--muted);font-weight:600}
 .tbl input{width:64px;background:#11151d;border:1px solid var(--bd);color:var(--text);border-radius:6px;padding:4px}
@@ -73,9 +74,16 @@ canvas{width:100%;background:#11151d;border:1px solid var(--bd);border-radius:8p
 .boiler-icon{font-size:32px;line-height:1}
 .boiler-label{text-align:center;font-size:14px;font-weight:600;margin-top:6px}
 button.sel{outline:2px solid var(--accent)}
+/* Sensor health dot */
+.hdot{display:inline-block;width:12px;height:12px;border-radius:50%}
+.hdot-ok{background:var(--ok)} .hdot-warn{background:var(--warn)} .hdot-err{background:var(--err)} .hdot-off{background:#444}
+/* Sensor detail panel */
+.sensor-detail{margin-top:8px;padding:10px;background:#11151d;border:1px solid var(--bd);border-radius:8px}
+.sensor-detail.hidden{display:none}
+.sensor-detail-header{display:flex;justify-content:space-between;align-items:center}
 @media(max-width:640px){
   .grid,.grid3{grid-template-columns:repeat(2,1fr)}
   .profile-grid{grid-template-columns:repeat(4,1fr)}
+  .tbl-scroll{margin:0 -14px;padding:0 14px}
   .tbl{font-size:11px}
-  .status .state{display:none}
 }

@@ -14,10 +14,12 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
@@ -191,7 +193,9 @@ static esp_err_t h_state(httpd_req_t *req)
     system_snapshot_t snap; control_get_snapshot(&snap);
     size_t fs_total = 0, fs_used = 0; storage_fs_usage(&fs_total, &fs_used);
     storage_flash_wear_t fw; storage_get_flash_wear(&fw);
-    char b[2900]; int p = 0;
+    char b[3200]; int p = 0;
+    int64_t now_us = esp_timer_get_time();
+    int64_t now_unix = (int64_t)time(NULL);
     p += snprintf(b + p, sizeof(b) - p,
         "{\"state\":\"%s\",\"heating\":%s,\"health\":%s,\"system\":%.2f,"
         "\"external\":%.2f,\"fault\":\"%s\",\"uptime\":%u,\"sim\":%s,"
@@ -200,7 +204,7 @@ static esp_err_t h_state(httpd_req_t *req)
         "\"flash_wear_pct\":%.3f,\"flash_erase_cycles\":%lu,"
         "\"flash_nvs_writes\":%lu,\"flash_fs_kb\":%lu,"
         "\"fault_grace_sec\":%d,\"max_on_sec\":%d,\"max_on_break_sec\":%d,"
-        "\"time_synced\":%s,\"device_ip\":\"%s\","
+        "\"time_synced\":%s,\"time_now\":%lld,\"device_ip\":\"%s\","
         "\"sensors\":[",
         sname(snap.state), snap.heating_active ? "true" : "false",
         snap.health_ok ? "true" : "false",
@@ -217,30 +221,34 @@ static esp_err_t h_state(httpd_req_t *req)
         (unsigned long)fw.nvs_commits, (unsigned long)fw.fs_kb_written,
         s_cfg->fault_grace_sec, s_cfg->max_on_sec, s_cfg->max_on_break_sec,
         he_time_valid() ? "true" : "false",
+        (long long)now_unix,
         network_device_ip());
 
     for (int i = 0; i < s_cfg->sensor_count && p + 120 < (int)sizeof(b); i++) {
         sensor_t *s = &s_cfg->sensors[i];
+        int age_s = s->last_update_ms ? (int)((now_us / 1000 - s->last_update_ms) / 1000) : 999;
         p += snprintf(b + p, sizeof(b) - p,
             "%s{\"id\":%d,\"name\":\"%s\",\"active\":%s,\"weight\":%.3f,"
             "\"calib\":%.2f,\"comfort\":%.2f,\"quality\":\"%s\",\"eff\":%.2f,"
-            "\"raw\":%.2f,\"sim\":%s,\"window\":%s}",
+            "\"raw\":%.2f,\"sim\":%s,\"window\":%s,\"last_seen\":%d}",
             i ? "," : "", s->id, s->name, s->active ? "true" : "false",
             s->weight, s->calib_offset, s->comfort_offset, qname(s->quality),
             he_isnan(s->last_effective) ? -99.0f : s->last_effective,
             he_isnan(s->last_raw) ? -99.0f : s->last_raw,
-            s->simulated ? "true" : "false", s->window_open ? "true" : "false");
+            s->simulated ? "true" : "false", s->window_open ? "true" : "false",
+            age_s);
     }
     if (s_cfg->has_external) {
         sensor_t *e = &s_cfg->sensors[HE_MAX_SENSORS];
+        int e_age = e->last_update_ms ? (int)((now_us / 1000 - e->last_update_ms) / 1000) : 999;
         p += snprintf(b + p, sizeof(b) - p,
             ",{\"id\":0,\"name\":\"%s\",\"active\":%s,\"weight\":0,\"calib\":0,"
             "\"comfort\":0,\"quality\":\"%s\",\"eff\":%.2f,\"raw\":%.2f,"
-            "\"sim\":%s,\"window\":false,\"external\":true}",
+            "\"sim\":%s,\"window\":false,\"external\":true,\"last_seen\":%d}",
             e->name, e->active ? "true" : "false", qname(e->quality),
             he_isnan(e->last_effective) ? -99.0f : e->last_effective,
             he_isnan(e->last_raw) ? -99.0f : e->last_raw,
-            e->simulated ? "true" : "false");
+            e->simulated ? "true" : "false", e_age);
     }
     p += snprintf(b + p, sizeof(b) - p, "],");
     /* profile + modes */

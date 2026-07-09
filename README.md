@@ -103,21 +103,36 @@ Jednostronicowa aplikacja (bez zależności) serwowana z firmware:
   każdego aktywnego czujnika wewnętrznego. W tło nałożony jest profil dobowy
   (pasmo ON/OFF). **Czerwony pasek na dole** pokazuje minuty, w których
   przekaźnik grzania był aktywny.
+  **Czujniki z awarią** (TIMEOUT, STALE, OUT_OF_RANGE) **nie są rysowane**
+  na wykresie — ich linia znika do czasu powrotu do stanu OK, a w legendzie
+  pojawia się znacznik ❌. Zapobiega to zanieczyszczaniu wykresu zamrożonymi
+  lub błędnymi odczytami.
 - **Zoom osi czasu** — przyciski **1h · 6h · 12h · 24h** nad wykresem.
   Tiki osi X dostosowują się automatycznie: co 15 min dla okna 1 h, co 1 h
   dla 6 h, co 3 h dla szerszych. Aktywny przycisk jest podświetlony.
 - **Wybór czujników na wykresie** — kolorowe checkboxy z nazwą czujnika
   (w jego kolorze linii) pozwalają pokazać/ukryć poszczególne czujniki
   wewnętrzne bez przeładowania strony. Domyślnie wszystkie widoczne.
+- **Health check czujników** — w tabeli czujników kolumna **Health** z kolorową
+  kropką: 🟢 zielona = OK/SIMULATED, 🟡 żółta = WINDOW_OPEN, 🔴 czerwona =
+  TIMEOUT/STALE/OUT_OF_RANGE, ⚫ szara = DISABLED. **Kliknięcie** na czerwoną
+  lub żółtą kropkę rozwija panel ze szczegółowym opisem problemu: przyczyna,
+  czas od ostatniego odczytu (`last_seen`) i skutek dla systemu (np.
+  wykluczenie ze średniej). Dane o wieku odczytu pochodzą z pola `last_seen`
+  (sekundy od ostatniej aktualizacji), dodanego do `/api/state`.
 - **Wykres zużycia energii (12 mies.)** — słupki minut grzania na dobę
   (pomarańczowe) z nałożoną linią średniej temperatury systemowej (niebieska).
   Dane z `daily.csv` (kolumna `heat_mins`).
 - Sekcje konfiguracyjne (profil dobowy, wybieg pompy / tryb awaryjny,
   **zabezpieczenia i limity**, sieć, powiadomienia, symulacja) są domyślnie
   zwinięte do paska nagłówka i rozwijane kliknięciem.
-- **Pulpit** — nagłówek panelu zawiera tytuł, wskaźnik zdrowia systemu, stan
-  automatu, adres IP urządzenia i status synchronizacji czasu (🕐 zielony =
-  SNTP, żółty = lokalny). Kafelki pokazują: temperatury, liczbę sprawnych
+- **Responsywność** — na urządzeniach mobilnych tabela czujników przewija się
+  poziomo (nie wychodzi poza kartę), siatka kafelków dashboardu zwija się do
+  2 kolumn, a wykresy dopasowują szerokość do ekranu.
+- **Pulpit** — nagłówek panelu zawiera tytuł, **zegar systemowy** (HH:MM:SS
+  z czasu SNTP lub wirtualnego), wskaźnik zdrowia systemu, stan automatu,
+  adres IP urządzenia i status synchronizacji czasu (🕐 zielony = SNTP,
+  żółty = lokalny). Kafelki pokazują: temperatury, liczbę sprawnych
   czujników, uptime, zużycie flash, czas grzania w oknie (24h/zoom) i status
   pieca.
 - **Status pieca** — kafelek z dużym kołem:

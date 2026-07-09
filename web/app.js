@@ -97,6 +97,11 @@ function renderDashboard(s) {
     ts.textContent = s.time_synced ? '🕐 Czas zsynchronizowany' : '🕐 Czas lokalny';
     ts.style.color = s.time_synced ? 'var(--ok)' : 'var(--warn)';
   }
+  /* System clock. */
+  if ($('clockTime') && s.time_now) {
+    const d = new Date(s.time_now * 1000);
+    $('clockTime').textContent = d.toLocaleTimeString('pl-PL');
+  }
   /* Device IP so the user knows what address to use. */
   if ($('devIp') && s.device_ip) {
     $('devIp').textContent = 'http://' + s.device_ip + '/';
@@ -120,19 +125,83 @@ function updateSensorCells(sensors) {
   sensors.forEach(sx => {
     const row = tb.querySelector('tr[data-sid="' + sx.id + '"]');
     if (!row) return;
+    const hc = row.querySelector('.hcell');
+    if (hc) hc.innerHTML = healthDot(sx.quality);
     const q = row.querySelector('.qcell');
     if (q) { q.className = 'qcell q-' + sx.quality; q.textContent = sx.quality + (sx.window ? ' ⊗' : ''); }
     const e = row.querySelector('.ecell');
     if (e) e.textContent = fmtT(sx.eff);
+    /* Update health dot click handler for live changes. */
+    const hd = row.querySelector('.hdot');
+    if (hd && sx.quality !== 'OK' && sx.quality !== 'SIMULATED' && sx.quality !== 'DISABLED') {
+      hd.style.cursor = 'pointer';
+      hd.onclick = () => showSensorDetail(sx);
+    } else if (hd) {
+      hd.style.cursor = 'default';
+      hd.onclick = null;
+    }
   });
 }
 
+function healthDot(q) {
+  const cls = q === 'OK' || q === 'SIMULATED' ? 'hdot-ok' :
+              q === 'WINDOW_OPEN' ? 'hdot-warn' :
+              q === 'DISABLED' ? 'hdot-off' : 'hdot-err';
+  const hasDetail = q !== 'OK' && q !== 'SIMULATED' && q !== 'DISABLED';
+  return `<span class="hdot ${cls}" data-hq="${q}" style="cursor:${hasDetail ? 'pointer' : 'default'}"></span>`;
+}
+function sensorHealthDetail(sx) {
+  const q = sx.quality;
+  const age = sx.last_seen !== undefined ? sx.last_seen : '?';
+  const name = sx.name || ('#' + sx.id);
+  let desc = '';
+  if (q === 'TIMEOUT') {
+    desc = `<b>${name}: brak komunikacji</b><br><br>
+      Ostatni odczyt: <b>${age} s</b> temu (limit: 90 s).<br>
+      Czujnik nie odpowiada na zapytania — możliwe przyczyny:<br>
+      • przerwany lub poluzowany przewód<br>
+      • uszkodzony czujnik / interfejs UART<br>
+      • brak zasilania modułu czujnika<br><br>
+      <b>Skutek:</b> czujnik wykluczony ze średniej systemowej.`;
+  } else if (q === 'STALE') {
+    desc = `<b>${name}: odczyt zamrożony</b><br><br>
+      Temperatura nie zmieniła się o więcej niż 0,05°C od <b>ponad 10 minut</b>.<br>
+      Ostatni odczyt: <b>${age} s</b> temu.<br>
+      Prawdziwy czujnik prawie zawsze delikatnie dryfuje —<br>
+      idealna stałość sugeruje zawieszony/uszkodzony sensor.<br><br>
+      <b>Skutek:</b> czujnik wykluczony ze średniej systemowej do czasu<br>
+      pierwszej znaczącej zmiany odczytu.`;
+  } else if (q === 'OUT_OF_RANGE') {
+    desc = `<b>${name}: odczyt poza zakresem</b><br><br>
+      Wartość poza przedziałem <b>−40°C … +85°C</b>.<br>
+      Typowo zwarcie lub rozwarcie toru pomiarowego.<br>
+      Ostatni odczyt: <b>${age} s</b> temu.<br><br>
+      <b>Skutek:</b> odczyt odrzucony, czujnik wykluczony ze średniej.`;
+  } else if (q === 'WINDOW_OPEN') {
+    desc = `<b>${name}: wykryto otwarte okno</b><br><br>
+      Lokalny szybki spadek temperatury (>1,5°C) znacząco<br>
+      większy niż w pozostałych czujnikach — prawdopodobnie<br>
+      otwarte okno w pobliżu tego czujnika.<br><br>
+      <b>Skutek:</b> czujnik czasowo wykluczony ze średniej,<br>
+      aby chwilowe wychłodzenie nie wymusiło grzania.<br>
+      Powrót automatyczny po odbudowie temperatury<br>
+      lub ręcznie przyciskiem „Przywróć".`;
+  }
+  return desc;
+}
+function showSensorDetail(sx) {
+  const sd = $('sensorDetail');
+  $('sensorDetailTitle').textContent = (sx.name || ('Czujnik #' + sx.id)) + ' — ' + sx.quality;
+  $('sensorDetailBody').innerHTML = sensorHealthDetail(sx);
+  sd.classList.remove('hidden');
+}
 function renderSensors(sensors) {
   const tb = $('sensorsTable').querySelector('tbody');
   tb.innerHTML = '';
   sensors.forEach(sx => {
     const tr = document.createElement('tr');
     tr.dataset.sid = sx.id;
+    const q = sx.quality;
     tr.innerHTML = `
       <td>${sx.id}${sx.external ? ' ★' : ''}${sx.sim ? ' SIM' : ''}</td>
       <td><input class="name" value="${sx.name}"></td>
@@ -140,7 +209,8 @@ function renderSensors(sensors) {
       <td><input type="number" step="0.01" value="${sx.weight}"></td>
       <td><input type="number" step="0.1" value="${sx.calib}"></td>
       <td><input type="number" step="0.1" value="${sx.comfort}"></td>
-      <td class="qcell q-${sx.quality}">${sx.quality}${sx.window ? ' ⊗' : ''}</td>
+      <td class="hcell">${healthDot(q)}</td>
+      <td class="qcell q-${q}">${q}${sx.window ? ' ⊗' : ''}</td>
       <td class="ecell">${fmtT(sx.eff)}</td>
       <td><button class="btn" style="padding:4px 8px" data-id="${sx.id}">Zapisz</button>${sx.window ? `<button class="btn" style="padding:4px 8px;margin-left:4px" data-restore="${sx.id}">Przywróć</button>` : ''}</td>`;
     const inputs = tr.querySelectorAll('input');
@@ -152,8 +222,16 @@ function renderSensors(sensors) {
     };
     const rb = tr.querySelector('button[data-restore]');
     if (rb) rb.onclick = () => post('/api/sensor/restore?id=' + sx.id, '').then(() => refresh());
+    /* Click on health dot for problem sensors shows detail panel. */
+    const hd = tr.querySelector('.hdot');
+    if (hd && q !== 'OK' && q !== 'SIMULATED' && q !== 'DISABLED') {
+      hd.onclick = () => showSensorDetail(sx);
+    }
     tb.appendChild(tr);
   });
+  /* Close sensor detail panel. */
+  const sdc = $('sensorDetailClose');
+  if (sdc) sdc.onclick = () => $('sensorDetail').classList.add('hidden');
 }
 
 let profileEdited = false;
@@ -255,10 +333,11 @@ let samples24 = [];   /* cached rows [ts,sys,ext,heat,state,s0..s5] */
 function render24(cv, rows, profile, sensors) {
   const winH = chartZoomH;  /* current zoom level */
   const dpr = window.devicePixelRatio || 1;
-  const W = cv.clientWidth || (cv.parentElement && cv.parentElement.clientWidth) || 600;
-  const H = +cv.getAttribute('height') || 220;
+  const W = (cv.parentElement && cv.parentElement.clientWidth - 28) || 600;
+  const H = 220;  /* fixed logical height — do NOT read back the attribute we set */
   cv.width = Math.round(W * dpr);
   cv.height = Math.round(H * dpr);
+  cv.style.width = W + 'px';
   cv.style.height = H + 'px';
   const ctx = cv.getContext('2d');
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -270,7 +349,18 @@ function render24(cv, rows, profile, sensors) {
   if (!t1) t1 = Date.now() / 1000;
   const t0 = t1 - winH * 3600;
 
-  /* y-range from sample values AND profile thresholds so both fit. */
+  const internal = (sensors || []).filter(s => !s.external).slice(0, 6);
+  /* Build set of "healthy" sensor column indices — only plot sensors
+   * whose quality is OK or SIMULATED. Failed (TIMEOUT/STALE/etc.)
+   * sensors keep their last value on-disk but should not be drawn
+   * until they return to normal. */
+  const healthyCols = new Set();
+  internal.forEach((s, i) => {
+    if (s.quality === 'OK' || s.quality === 'SIMULATED') healthyCols.add(i);
+  });
+
+  /* y-range from sample values AND profile thresholds so both fit.
+   * Only consider sensor columns that are currently healthy. */
   let lo = Infinity, hi = -Infinity, pts = 0;
   const consider = (v) => { if (v !== null && v !== undefined && v > -98) { lo = Math.min(lo, v); hi = Math.max(hi, v); } };
   rows.forEach(d => {
@@ -278,7 +368,7 @@ function render24(cv, rows, profile, sensors) {
     let any = false;
     consider(d[1]); consider(d[2]);
     if (d[1] > -98 || d[2] > -98) any = true;
-    for (let c = 5; c < d.length; c++) { consider(d[c]); if (d[c] > -98) any = true; }
+    healthyCols.forEach(i => { consider(d[5 + i]); if (d[5 + i] > -98) any = true; });
     if (any) pts++;
   });
   if (profile && profile.length === 24) profile.forEach(h => { consider(h[0]); consider(h[1]); });
@@ -357,17 +447,18 @@ function render24(cv, rows, profile, sensors) {
   } else {
     /* per-sensor lines first (thin), then external and system on top (thick).
      * per_sensor[i] lives at sample column 5+i, matching the internal sensor
-     * order in /api/state. */
-    const internal = (sensors || []).filter(s => !s.external).slice(0, 6);
+     * order in /api/state. Skip failed sensors — don't draw stale data. */
     internal.forEach((s, i) => {
-      if (!visibleSensors.has(s.id)) return;   /* skip hidden sensor lines */
+      if (!visibleSensors.has(s.id)) return;          /* skip hidden sensor lines */
+      if (!healthyCols.has(i)) return;                /* skip failed sensors */
       const col = SENSOR_COLORS[i % SENSOR_COLORS.length];
       plot(d => d[5 + i], col, 1);
     });
-    /* Legend includes internal sensors (all, even hidden — toggle via checkboxes above). */
+    /* Legend — show all sensors; mark failed ones so user knows why they disappeared. */
     internal.forEach((s, i) => {
       const col = SENSOR_COLORS[i % SENSOR_COLORS.length];
-      legend.push([s.name || ('S' + (i + 1)), col]);
+      const label = (s.name || ('S' + (i + 1))) + (healthyCols.has(i) ? '' : ' ❌');
+      legend.push([label, col]);
     });
     plot(d => d[2], '#22c55e', 1.4); legend.push(['zewn.', '#22c55e']);
     plot(d => d[1], '#3b82f6', 1.8); legend.push(['system', '#3b82f6']);
@@ -406,10 +497,11 @@ async function load24h() {
 function drawEnergyBars(cv, data) {
   if (!data || !data.length) return;
   const dpr = window.devicePixelRatio || 1;
-  const W = cv.clientWidth || 600;
-  const H = +cv.getAttribute('height') || 180;
+  const W = (cv.parentElement && cv.parentElement.clientWidth - 28) || 600;
+  const H = 180;  /* fixed logical height — do NOT read back the attribute we set */
   cv.width = Math.round(W * dpr);
   cv.height = Math.round(H * dpr);
+  cv.style.width = W + 'px';
   cv.style.height = H + 'px';
   const ctx = cv.getContext('2d');
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
