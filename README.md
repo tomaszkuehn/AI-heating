@@ -413,9 +413,9 @@ awaryjny → awaria → histereza normalna. Każda **zmiana stanu** jest logowan
 
 | Zdarzenie | Warunek | Zakończenie | Akcje / rezultat |
 |---|---|---|---|
-| **Grzanie ON (histereza)** | `T_sys ≤ on_temp` danej godziny profilu, minęło `HE_MIN_OFF_SEC = 120 s` OFF i brak blokady antyoscylacyjnej | `T_sys ≥ off_temp` po min. `HE_MIN_ON_SEC = 120 s` ON | przekaźnik ON, stan `ST_HEATING` |
+| **Grzanie ON (histereza)** | `T_sys ≤ on_temp` danej godziny profilu, minęło `HE_MIN_OFF_SEC = 90 s` OFF i brak blokady antyoscylacyjnej | `T_sys ≥ off_temp` po min. `HE_MIN_ON_SEC = 90 s` ON | przekaźnik ON, stan `ST_HEATING` |
 | **Grzanie OFF (histereza)** | `T_sys ≥ off_temp`, min. czas ON dotrzymany, brak blokady | spadek `T_sys ≤ on_temp` | przekaźnik OFF, stan `ST_IDLE` (lub wybieg pompy) |
-| **Blokada antyoscylacyjna** | każde wejście w nowy stan ustawia `HE_ANTIOSC_LOCK_SEC = 180 s` | odliczenie do zera (skalowane ×10 w symulacji) | wstrzymuje przełączenie ON↔OFF, tłumi migotanie na progu |
+| **Blokada antyoscylacyjna** | każde wejście w nowy stan ustawia `HE_ANTIOSC_LOCK_SEC = 120 s` | odliczenie do zera (skalowane ×10 w symulacji) | wstrzymuje przełączenie ON↔OFF, tłumi migotanie na progu |
 | **Zabezpieczenie MAX ON** | ciągłe grzanie ≥ `max_on_sec` (domyślnie 4 h, konfigurowalne) | po upływie `max_on_break_sec` (domyślnie 10 min, konfigurowalne) | wymusza OFF + twardą przerwę niezależnie od histerezy (ochrona przed „zawieszonym" termostatem) |
 | **BOOST 5 min** | przycisk „Grzanie 5 min" (`/api/boost`) | upływ `HE_BOOST_DURATION_SEC = 300 s` lub ponowne kliknięcie (anuluj) | wymusza grzanie ponad histerezę; po zakończeniu wraca do decyzji histerezy |
 | **Kill switch** | przycisk „Wyłącz ogrzewanie" (`/api/heating?disable=1`) z potwierdzeniem „Na pewno?" | ponowne włączenie tym samym przyciskiem (zielony „Włącz ogrzewanie") | najwyższy priorytet: przekaźnik OFF, stan `ST_IDLE`, ignoruje profil i BOOST; status pieca pokazuje szare koło z ✕ i podpis „Wyłączony" |

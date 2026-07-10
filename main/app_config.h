@@ -30,10 +30,10 @@ extern "C" {
 #define HE_SIM_TIME_SCALE       10            /* x10 fast-forward in sim mode */
 
 /* ---- Hysteresis / protection defaults (spec 5.2) ---- */
-#define HE_MIN_ON_SEC           120
-#define HE_MIN_OFF_SEC          120
+#define HE_MIN_ON_SEC           90           /* min continuous ON before off allowed */
+#define HE_MIN_OFF_SEC          90           /* min continuous OFF before on allowed */
 #define HE_MAX_ON_SEC           (3600 * 4)
-#define HE_ANTIOSC_LOCK_SEC     180
+#define HE_ANTIOSC_LOCK_SEC     120           /* anti-oscillation lock after state change */
 
 /* ---- Network defaults (spec 12) ---- */
 #define HE_DEFAULT_AP_SSID      "ESP"
