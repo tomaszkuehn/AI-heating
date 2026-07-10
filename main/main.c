@@ -67,6 +67,9 @@ static void seed_defaults(system_config_t *c)
     c->fault_grace_sec = HE_DEFAULT_FAULT_GRACE_SEC;
     c->max_on_sec = HE_DEFAULT_MAX_ON_SEC;
     c->max_on_break_sec = HE_DEFAULT_MAX_ON_BREAK_SEC;
+    c->min_on_sec = HE_DEFAULT_MIN_ON_SEC;
+    c->min_off_sec = HE_DEFAULT_MIN_OFF_SEC;
+    c->anti_osc_lock_sec = HE_DEFAULT_ANTIOSC_LOCK_SEC;
     strncpy(c->device_name, HE_DEFAULT_DEVICE_NAME, sizeof(c->device_name) - 1);
     c->wifi_sta_mode = false;
     strncpy(c->wifi_ssid, HE_DEFAULT_AP_SSID, sizeof(c->wifi_ssid) - 1);
@@ -93,6 +96,15 @@ static void repair_config(system_config_t *c)
     if (c->fault_grace_sec < 60)  c->fault_grace_sec  = HE_DEFAULT_FAULT_GRACE_SEC;
     if (c->max_on_sec < 60)       c->max_on_sec       = HE_DEFAULT_MAX_ON_SEC;
     if (c->max_on_break_sec < 60) c->max_on_break_sec = HE_DEFAULT_MAX_ON_BREAK_SEC;
+    /* User-configurable hysteresis timing: an upgraded device zero-fills these
+     * tail fields to 0. Below the floor they would enable instant toggling
+     * (relay chatter); above the ceiling they stall heating. Reset to default. */
+    if (c->min_on_sec < HE_MIN_ON_OFF_FLOOR || c->min_on_sec > 3600)
+        c->min_on_sec = HE_DEFAULT_MIN_ON_SEC;
+    if (c->min_off_sec < HE_MIN_ON_OFF_FLOOR || c->min_off_sec > 3600)
+        c->min_off_sec = HE_DEFAULT_MIN_OFF_SEC;
+    if (c->anti_osc_lock_sec < HE_ANTIOSC_FLOOR || c->anti_osc_lock_sec > 600)
+        c->anti_osc_lock_sec = HE_DEFAULT_ANTIOSC_LOCK_SEC;
     if (c->device_name[0] == '\0') {
         strncpy(c->device_name, HE_DEFAULT_DEVICE_NAME, sizeof(c->device_name) - 1);
         c->device_name[sizeof(c->device_name) - 1] = '\0';

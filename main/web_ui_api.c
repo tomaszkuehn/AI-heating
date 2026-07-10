@@ -245,6 +245,7 @@ static esp_err_t h_state(httpd_req_t *req)
         "\"flash_wear_pct\":%.3f,\"flash_erase_cycles\":%lu,"
         "\"flash_nvs_writes\":%lu,\"flash_fs_kb\":%lu,"
         "\"fault_grace_sec\":%d,\"max_on_sec\":%d,\"max_on_break_sec\":%d,"
+        "\"min_on_sec\":%d,\"min_off_sec\":%d,\"anti_osc_lock_sec\":%d,"
         "\"time_synced\":%s,\"time_now\":%lld,\"device_ip\":\"%s\","
         "\"sensors\":[",
         sname(snap.state), snap.heating_active ? "true" : "false",
@@ -261,6 +262,7 @@ static esp_err_t h_state(httpd_req_t *req)
         (double)fw.est_erase_pct, (unsigned long)fw.est_erase_cycles,
         (unsigned long)fw.nvs_commits, (unsigned long)fw.fs_kb_written,
         s_cfg->fault_grace_sec, s_cfg->max_on_sec, s_cfg->max_on_break_sec,
+        s_cfg->min_on_sec, s_cfg->min_off_sec, s_cfg->anti_osc_lock_sec,
         he_time_valid() ? "true" : "false",
         (long long)now_unix,
         network_device_ip());
@@ -698,6 +700,13 @@ static esp_err_t h_limits(httpd_req_t *req)
         s_cfg->max_on_sec = v;
     if (json_int(body, "max_on_break_sec", &v) && v >= 60 && v <= 86400)
         s_cfg->max_on_break_sec = v;
+    /* User-configurable hysteresis timing (anti-chatter floor enforced). */
+    if (json_int(body, "min_on_sec", &v) && v >= HE_MIN_ON_OFF_FLOOR && v <= 3600)
+        s_cfg->min_on_sec = v;
+    if (json_int(body, "min_off_sec", &v) && v >= HE_MIN_ON_OFF_FLOOR && v <= 3600)
+        s_cfg->min_off_sec = v;
+    if (json_int(body, "anti_osc_lock_sec", &v) && v >= HE_ANTIOSC_FLOOR && v <= 600)
+        s_cfg->anti_osc_lock_sec = v;
     storage_save_config(s_cfg);
     CFG_RET(send_text(req, "ok", 200));
 }

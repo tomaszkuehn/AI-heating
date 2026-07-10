@@ -57,6 +57,14 @@ typedef struct {
     uint8_t             notify_ev_ver;              /* 0 = unconfigured (upgrade/first boot) -> repair_config sets defaults */
     bool                notify_ev_faults;           /* e-mail on fault raised (default true)  */
     bool                notify_ev_restart;          /* e-mail on restart (~60 s boot)(default true)  */
+    /* User-configurable hysteresis timing (set via /api/limits). Tail-appended
+     * for NVS upgrade safety: an older short-read blob zero-fills these to 0,
+     * and repair_config() resets them to the HE_DEFAULT_* values. control_engine
+     * also falls back to the compile-time HE_MIN_*_SEC when a value is below
+     * the floor, so a 0 (upgrade-unset) can never enable instant toggling. */
+    int                 min_on_sec;                 /* min continuous ON before OFF allowed (default 90)  */
+    int                 min_off_sec;                /* min continuous OFF before ON allowed (default 90) */
+    int                 anti_osc_lock_sec;          /* anti-oscillation lock after state change (default 120) */
 } system_config_t;
 
 /* One minute sample record (all active sensors + system + external). */

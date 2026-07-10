@@ -157,6 +157,12 @@
       <label>Maks. ciągłe grzanie (s)<input type="number" id="limMaxOn" class="inp" min="300" max="86400"></label>
       <label>Przerwa po maks. grzaniu (s)<input type="number" id="limBreak" class="inp" min="60" max="86400"></label>
     </div>
+    <h3 style="margin:10px 0 4px">Histereza (timery anty-migotaniowe)</h3>
+    <div class="grid3">
+      <label>Min. czas grzania (s)<input type="number" id="limMinOn" class="inp" min="30" max="3600"></label>
+      <label>Min. czas przerwy (s)<input type="number" id="limMinOff" class="inp" min="30" max="3600"></label>
+      <label>Blokada antyosc. (s)<input type="number" id="limAntiosc" class="inp" min="30" max="600"></label>
+    </div>
     <button id="btnLimits" class="btn">Zapisz limity</button>
   </section>
 

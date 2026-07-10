@@ -301,6 +301,9 @@ function renderModes(s) {
     if ($('limGrace')) $('limGrace').value = s.fault_grace_sec || 300;
     if ($('limMaxOn')) $('limMaxOn').value = s.max_on_sec || 14400;
     if ($('limBreak')) $('limBreak').value = s.max_on_break_sec || 600;
+    if ($('limMinOn')) $('limMinOn').value = s.min_on_sec || 90;
+    if ($('limMinOff')) $('limMinOff').value = s.min_off_sec || 90;
+    if ($('limAntiosc')) $('limAntiosc').value = s.anti_osc_lock_sec || 120;
     /* per-event-type e-mail subscription (safe booleans). */
     if ($('nEvFaults'))  $('nEvFaults').checked  = s.notify_ev.faults;
     if ($('nEvRestart')) $('nEvRestart').checked = s.notify_ev.restart;
@@ -767,7 +770,10 @@ $('profileFileInput').onchange = () => {
 $('btnLimits').onclick = () => post('/api/limits', {
   fault_grace_sec: +$('limGrace').value,
   max_on_sec: +$('limMaxOn').value,
-  max_on_break_sec: +$('limBreak').value
+  max_on_break_sec: +$('limBreak').value,
+  min_on_sec: +$('limMinOn').value,
+  min_off_sec: +$('limMinOff').value,
+  anti_osc_lock_sec: +$('limAntiosc').value
 }, true).then(() => refresh());
 
 /* Collapsible config sections: clicking the header toggles its card. */

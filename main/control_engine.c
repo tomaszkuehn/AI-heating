@@ -107,7 +107,9 @@ static void enter_state(control_state_t next, control_state_t *target)
     if (*target == next) return;
     *target = next;
     s_last_change_us = esp_timer_get_time();
-    s_anti_osc_ms = HE_ANTIOSC_LOCK_SEC * 1000;
+    int aosc = (s_cfg && s_cfg->anti_osc_lock_sec >= HE_ANTIOSC_FLOOR)
+               ? s_cfg->anti_osc_lock_sec : HE_ANTIOSC_LOCK_SEC;
+    s_anti_osc_ms = aosc * 1000;
     char buf[96];
     snprintf(buf, sizeof(buf), "state->%d", (int)next);
     storage_log_event(FAULT_NONE, 0, buf);
@@ -141,6 +143,13 @@ static bool hysteresis_decision(float sys_temp, int hour, bool currently_on)
     if (s_max_on_break_ms > 0) return false;
 
     int max_on_ms = (s_cfg->max_on_sec > 0) ? s_cfg->max_on_sec * 1000 : 14400000;
+    /* User-configurable minimum ON/OFF durations; fall back to the compile-time
+     * constant if the stored value is below the anti-chatter floor (defensive
+     * against a corrupted NVS read between repair_config and this tick). */
+    int min_on_ms  = (s_cfg->min_on_sec  >= HE_MIN_ON_OFF_FLOOR)
+                     ? s_cfg->min_on_sec  * 1000 : HE_MIN_ON_SEC  * 1000;
+    int min_off_ms = (s_cfg->min_off_sec >= HE_MIN_ON_OFF_FLOOR)
+                     ? s_cfg->min_off_sec * 1000 : HE_MIN_OFF_SEC * 1000;
 
     if (currently_on) {
         /* Safety: force off after continuous heating exceeds the configured limit. */
@@ -149,11 +158,11 @@ static bool hysteresis_decision(float sys_temp, int hour, bool currently_on)
                                 ? s_cfg->max_on_break_sec * 1000 : 600000;
             return false;
         }
-        if (sys_temp >= ph->off_temp && s_on_ms >= HE_MIN_ON_SEC * 1000 && !anti_locked)
+        if (sys_temp >= ph->off_temp && s_on_ms >= min_on_ms && !anti_locked)
             return false;
         return true;
     } else {
-        if (sys_temp <= ph->on_temp && s_off_ms >= HE_MIN_OFF_SEC * 1000 && !anti_locked)
+        if (sys_temp <= ph->on_temp && s_off_ms >= min_off_ms && !anti_locked)
             return true;
         return false;
     }
