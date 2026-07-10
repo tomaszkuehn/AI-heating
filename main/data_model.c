@@ -15,6 +15,20 @@ float he_clampf(float v, float lo, float hi)
     return v;
 }
 
+const char *sensor_quality_name(sensor_quality_t q)
+{
+    switch (q) {
+    case QUAL_OK:           return "OK";
+    case QUAL_TIMEOUT:      return "TIMEOUT";
+    case QUAL_OUT_OF_RANGE: return "OUT_OF_RANGE";
+    case QUAL_STALE:        return "STALE";
+    case QUAL_WINDOW_OPEN:  return "WINDOW_OPEN";
+    case QUAL_DISABLED:     return "DISABLED";
+    case QUAL_SIMULATED:    return "SIMULATED";
+    default:                return "?";
+    }
+}
+
 bool he_time_valid(void)
 {
     return time(NULL) > (time_t)HE_TIME_VALID_EPOCH;

@@ -140,6 +140,16 @@ esp_err_t storage_load_config(system_config_t *cfg)
     nvs_close(h);
     if (err != ESP_OK) {
         memset(cfg, 0, sizeof(*cfg));
+    } else if (needed < sizeof(*cfg)) {
+        /* Short read: the stored blob is from an older firmware whose struct was
+         * smaller (e.g. before device_name + the protection limits were appended).
+         * nvs_get_blob returned ESP_OK and copied only `needed` bytes, leaving the
+         * trailing fields uninitialised. Zero the unread tail so repair_config()
+         * sees clean values to clamp instead of stack/BSS garbage; the caller
+         * repairs and re-saves. */
+        memset((char *)cfg + needed, 0, sizeof(*cfg) - needed);
+        ESP_LOGW(TAG, "config blob %u B < struct %u B -- repairing trailing fields",
+                 (unsigned)needed, (unsigned)sizeof(*cfg));
     }
     return err;
 }

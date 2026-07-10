@@ -38,7 +38,7 @@ Firmware jest podzielony na moduły w `main/`:
 | `storage_manager.c`   | storage_manager      | NVS (konfig) + LittleFS (profile, historia, logi), agregacja      |
 | `network_manager.c`   | network_manager      | Wi-Fi AP/STA, provisioning, SNTP, przycisk resetu sieci           |
 | `web_ui_api.c`        | web_ui_api           | serwer HTTP + REST API + SPA (`web/`)                             |
-| `notification_manager.c` | notification_manager | e-mail (SMTP) / SMS (brama HTTP)                              |
+| `notification_manager.c` | notification_manager | e-mail (SMTP) / SMS (brama HTTP), wysyłane z osobnego zadania workera (kolejka FreeRTOS, off-loop)                              |
 | `profile.c`           | —                    | profil dobowy 24h: walidacja, JSON, zapis/odczyt                  |
 | `data_model.h`        | —                    | wspólne typy (stan, jakość, czujnik, profil)                      |
 
@@ -49,6 +49,15 @@ zależy od warstwy WWW — awaria serwera HTTP nie blokuje sterowania (spec 13).
 
 - **NVS** — konfiguracja klucz-wartość (sieć, czujniki, wagi, offsety,
   alarmy, tryby, flagi) oraz liczniki zużycia flash.
+- **Samonaprawa konfiguracji po aktualizacji** — odczyt konfiguracji jest
+  **tolerancyjny na rozmiar** (`storage_load_config`): gdy zapisany blob jest
+  krótszy niż aktualny `system_config_t` (np. po aktualizacji firmware z nowymi
+  polami w środku struktury), nieodczytany ogon jest zerowany, a `repair_config`
+  przywraca domyślne dla pustej nazwy urządzenia i nieprawidłowych limitów
+  (`fault_grace_sec` / `max_on_sec` / `max_on_break_sec` < 60 s). Sprzęt
+  samonaprawia się po aktualizacji — bez `erase_flash` (WiFi i reszta konfigu
+  przetrwają). `fault_manager` ma dodatkowo zero-fallback karencji, więc nawet
+  „wyzerowany" limit nie wywoła fałszywej awarii `NO_HEAT_RISE`.
 - **LittleFS** — pliki użytkownika, profile dobowe, agregaty dobowe i logi
   (odporny na zaniki zasilania, lepszy od SPIFFS do logowania).
 - **Historia minutowa (24 h) jest wyłącznie w RAM** — bufor pierścieniowy
@@ -95,7 +104,12 @@ pokazuje użycie KB i procent zużycia (żółty od 0,5%, czerwony od 1%).
 
 ## Interfejs WWW (`web/`)
 
-Jednostronicowa aplikacja (bez zależności) serwowana z firmware:
+Jednostronicowa aplikacja (bez zależności) serwowana z firmware. Zasoby WWW
+(`index.html`, `style.css`, `app.js`) są **kompresowane gzip w trakcie
+budowania** (`main/CMakeLists.txt`, `gzip -9 -n`) i serwowane z nagłówkiem
+`Content-Encoding: gzip` — przeglądarka dekompresuje je transparentnie. To
+odchudza firmware o ~35 KB (z ~816 B do ~36 KB wolnego w partycji 1 MB) bez utraty
+funkcji. Możliwe sekcje:
 
 - **Wykres temperatur 24 h** — oś X w czasie rzeczywistym (okno kotwiczone do
   najnowszej próbki, więc przewija się w lewo w miarę napływu danych), ze skalą
@@ -142,18 +156,26 @@ Jednostronicowa aplikacja (bez zależności) serwowana z firmware:
   żółty = lokalny). Kafelki pokazują: temperatury, liczbę sprawnych
   czujników, uptime, zużycie flash, czas grzania w oknie (24h/zoom) i status
   pieca.
-- **Powiadomienie po restarcie** — 60 sekund po uruchomieniu (gdy Wi-Fi już
-  działa) wysyłane jest jednorazowe powiadomienie:
-  - **E-mail** — szczegółowy raport: nazwa urządzenia, temperatury systemowa
-    i zewnętrzna, liczba sprawnych czujników, stan każdego czujnika
-    (nazwa, jakość, temperatura efektywna).
-  - **SMS** — krótka wiadomość `[nazwa] RESTART`.
-  Wysyłka tylko gdy skonfigurowany e-mail (`email_enabled`) i/lub SMS
-  (`sms_enabled`). Konfiguracja w karcie „Powiadomienia".
+- **Powiadomienie po restarcie** — **60 sekund po uruchomieniu** (liczone po
+  rzeczywistym uptime `esp_timer_get_time()`, więc działa poprawnie także w
+  trybie symulacji/przyspieszenia ×10) wysyłane jest jednorazowe powiadomienie.
+  Wysyłka odbywa się **z osobnego zadania workera** (kolejka FreeRTOS,
+  off-loop) — blokujące I/O SMTP/SMS nie blokuje pętli sterowania i nie
+  wyzwala task-watchdog; worker dodatkowo **ponawia do 30 s**, gdy Wi-Fi nie
+  zdąży jeszcze powstać. E-mail zawiera szczegółowy raport: nazwa urządzenia,
+  temperatury systemowa i zewnętrzna, liczba sprawnych czujników, stan każdego
+  czujnika wewnętrznego (nazwa, jakość, temperatura efektywna) **oraz czujnika
+  zewnętrznego**, gdy jest skonfigurowany. SMS to krótka wiadomość
+  `[nazwa] RESTART`. Wysyłka tylko gdy skonfigurowany e-mail (`email_enabled`)
+  i/lub SMS (`sms_enabled`). Konfiguracja w karcie „Powiadomienia".
 - **Nazwa urządzenia** konfigurowalna przez kliknięcie tytułu w nagłówku
   dashboardu lub przez `POST /api/device {"name":"..."}`. Domyślnie
   „Sterownik CO". Przetrzymuje restart (NVS). Używana w temacie i treści
-  powiadomień restartowych.
+  powiadomień restartowych. **Walidacja:** znaki `"`, `\` i kontrolne (<0x20)
+  są usuwane przy zapisie, a pusta/w całości odrzucona nazwa → HTTP 400 (zapobiega
+  zepsuciu JSON `/api/state` i wstrzyknięciu nagłówków SMTP); UTF-8 (np. polskie
+  znaki) jest dozwolone, a w temacie powiadomień kodowane RFC 2047
+  (`=?UTF-8?B?…?=`), gdy zawiera znaki non-ASCII.
 - **Status pieca** — kafelek z dużym kołem:
   - 🔥 **czerwone koło + płomień** = grzanie aktywne, podpis „Grzeje"
   - 🔵 **niebieskie koło** = grzanie włączone, ale nie grzeje, podpis „Nie grzeje"
@@ -368,12 +390,23 @@ awaryjny → awaria → histereza normalna. Każda **zmiana stanu** jest logowan
 
 ### E. Powiadomienia (`notification_manager.c`)
 
-- **Warunek:** wywołanie `notification_send_alert()` z `fault_manager` przy
-  podniesieniu dowolnej awarii.
-- **Zakończenie:** jednorazowo na awarię (do skasowania flagą `s_notified`).
+Powiadomienia są **odkładane do kolejki** (`notification_dispatch_alert` /
+`notification_dispatch_restart`) i realizowane przez **osobne zadanie workera**
+(`notify_worker_task`, prio 4, **nie subskrybowane task-watchdog**). Dzięki temu
+blokujące I/O SMTP/SMS (DNS + TCP + handshake, rzędu sekund) **nigdy nie blokuje
+pętli sterowania** ani nie trzyma `he_config_lock` — nawet przy wolnym /
+nieosiągalnym serwerze nie ma ryzyka TWDT-reboot. Miejsca wyzwalania
+(`fault_manager` przy awarii, `control_engine` 60 s po restarcie) kopiują potrzebne
+pola pod lockiem i odkładają komendę bez blokowania (głębokość kolejki 2; pełna
+→ porzucenie + log).
+
+- **Warunek:** podniesienie awarii (`fault_manager`) → alert; uruchomienie
+  (po 60 s real uptime) → restart. Pojedynczo na awarię (flaga `s_notified`).
 - **Akcje:** e-mail przez SMTP (`email_enabled` + adres) i/lub SMS przez bramę
-  HTTP (`sms_enabled` + telefon). Temat: `[Heating] fault N`, treść = opis
-  awarii. Błędy wysyłki są logowane, ale nie blokują sterowania.
+  HTTP (`sms_enabled` + telefon). Temat alertu: `[Heating] fault N`; temat
+  restartu: `[nazwa urządzenia] RESTART` (non-ASCII → RFC 2047). Treść = opis
+  awarii / szczegółowy raport restartu (patrz „Powiadomienie po restarcie").
+  Błędy wysyłki są logowane, ale nie blokują sterowania.
 
 #### Diagnostyka i testowanie e-mail (przycisk „Testuj e-mail")
 

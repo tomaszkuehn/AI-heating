@@ -16,19 +16,25 @@ extern "C" {
 
 void notification_init(void);
 
-/* Send an alert using whatever channels are enabled in cfg. */
+/* Enqueue an alert / restart notification for off-loop delivery. The caller must
+ * hold he_config_lock so the snapshotted fields are consistent; these never block.
+ * No-op when neither channel is enabled or the queue is absent/full (dropped + log). */
+void notification_dispatch_alert(const notify_cfg_t *cfg, fault_class_t f,
+                                 const char *message);
+void notification_dispatch_restart(const notify_cfg_t *cfg, const char *device_name,
+    float sys_temp, float ext_temp, int healthy, int total,
+    const sensor_t *sensors, int sensor_count, bool has_external);
+
+/* Synchronous send (used by the off-loop worker and the test handler). */
 void notification_send_alert(const notify_cfg_t *cfg, fault_class_t f,
                              const char *message);
+void notification_send_restart(const notify_cfg_t *cfg, const char *device_name,
+    float sys_temp, float ext_temp, int healthy, int total,
+    const sensor_t *sensors, int sensor_count, bool has_external);
 
 /* Test email delivery using the supplied config. Returns a malloc'd diagnostic
  * string the caller must free(), or NULL on immediate failure. */
 char *notification_test_email(const notify_cfg_t *cfg);
-
-/* Send a restart notification 60s after boot: detailed email + short SMS.
- * Safe to call when neither email nor SMS is configured (no-op). */
-void notification_send_restart(const notify_cfg_t *cfg, const char *device_name,
-    float sys_temp, float ext_temp, int healthy, int total,
-    const sensor_t *sensors, int sensor_count);
 
 #ifdef __cplusplus
 }

@@ -27,7 +27,7 @@ extern "C" {
 
 /* ---- Master configuration held in NVS ---- */
 typedef struct {
-    sensor_t            sensors[HE_MAX_SENSORS + 1]; /* idx 0 = external */
+    sensor_t            sensors[HE_MAX_SENSORS + 1]; /* idx 0..HE_MAX_SENSORS-1 = internal; idx HE_MAX_SENSORS = external */
     int                 sensor_count;                /* internal count 1..6 */
     bool                has_external;
     daily_profile_t     profile;

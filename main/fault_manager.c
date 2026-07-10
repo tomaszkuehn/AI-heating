@@ -56,7 +56,7 @@ static void raise_fault(fault_class_t f, const char *text)
     ESP_LOGW(TAG, "fault raised: %d (%s)", (int)f, text);
     storage_log_event(f, 2, text);
     if (s_cfg && !s_notified) {
-        notification_send_alert(&s_cfg->notify, f, text);
+        notification_dispatch_alert(&s_cfg->notify, f, text);
         s_notified = true;
     }
 }
@@ -109,7 +109,11 @@ void fault_manager_observe(const fault_context_t *ctx)
         return;
     }
 
-    int grace_ms = s_cfg ? s_cfg->fault_grace_sec * 1000 : 300000;
+    /* fault_grace_sec == 0 (e.g. from an upgraded/short-read NVS blob) must NOT
+     * collapse the grace to zero and trip NO_HEAT_RISE on the first heating tick.
+     * Fall back to the default when the field is missing or invalid. */
+    int grace_ms = (s_cfg && s_cfg->fault_grace_sec > 0)
+                   ? s_cfg->fault_grace_sec * 1000 : 300000;
 
     /* --- Heating effectiveness (only while heating, after grace) --- */
     if (ctx->heating_active && !he_isnan(ctx->system_temp) && !he_isnan(s_heat_start_temp)) {

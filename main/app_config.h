@@ -39,6 +39,12 @@ extern "C" {
 #define HE_DEFAULT_AP_SSID      "ESP"
 #define HE_DEFAULT_AP_PASS      "12345678"    /* WPA2 requires >= 8 chars */
 
+/* ---- Device identity & protection-limit defaults ---- */
+#define HE_DEFAULT_DEVICE_NAME      "Sterownik CO"
+#define HE_DEFAULT_FAULT_GRACE_SEC  300        /* NO_HEAT_RISE grace (5 min)    */
+#define HE_DEFAULT_MAX_ON_SEC       14400      /* max continuous heating (4 h)  */
+#define HE_DEFAULT_MAX_ON_BREAK_SEC 600        /* forced break after max-on      */
+
 #ifdef __cplusplus
 }
 #endif

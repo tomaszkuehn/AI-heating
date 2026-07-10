@@ -25,29 +25,38 @@ function fmtUp(ms) {
  * themselves" bug). */
 function renderDashboard(s) {
   lastState = s;
-  /* Device name — click to edit inline. Set up once. */
+  /* Device name — click to edit inline. The click handler is wired once; the
+   * displayed text is refreshed every tick except while an <input> is live, so a
+   * name changed elsewhere (or repaired on boot) still propagates here. (#10) */
   const dn = $('devName');
-  if (dn && s.device_name && !dn._init) {
-    dn._init = true;
-    dn.textContent = s.device_name;
-    dn.onclick = function () {
-      const old = dn.textContent;
-      const inp = document.createElement('input');
-      inp.value = old;
-      inp.style.cssText = 'font-size:16px;font-weight:700;background:#11151d;border:1px solid #262b35;color:#e7ecf3;border-radius:6px;padding:2px 6px;width:200px';
-      inp.onblur = function () {
-        var v = inp.value.trim();
-        if (v) { dn.textContent = v; post('/api/device', {name: v}, true); }
-        else dn.textContent = old;
+  if (dn) {
+    if (!dn._init) {
+      dn._init = true;
+      dn.onclick = function () {
+        const old = dn.textContent;
+        const inp = document.createElement('input');
+        inp.value = old;
+        inp.style.cssText = 'font-size:16px;font-weight:700;background:#11151d;border:1px solid #262b35;color:#e7ecf3;border-radius:6px;padding:2px 6px;width:200px';
+        let cancelled = false;
+        inp.onblur = function () {
+          var v = inp.value.trim();
+          if (cancelled || !v) { dn.textContent = old; return; }   /* Escape / empty -> revert */
+          dn.textContent = v;                  /* optimistic; reverted if server rejects */
+          post('/api/device', {name: v}, true).then(r => {          /* (#11) handle result */
+            if (r === 'ok') refresh();
+            else { dn.textContent = old; alert('Nieprawidłowa nazwa: ' + (typeof r === 'string' ? r : 'odrzucony')); }
+          });
+        };
+        inp.onkeydown = function (e) {
+          if (e.key === 'Enter') inp.blur();
+          if (e.key === 'Escape') { cancelled = true; inp.blur(); }  /* (#7) don't commit on Escape */
+        };
+        dn.textContent = '';
+        dn.appendChild(inp);
+        inp.focus();
       };
-      inp.onkeydown = function (e) {
-        if (e.key === 'Enter') inp.blur();
-        if (e.key === 'Escape') { dn.textContent = old; }
-      };
-      dn.textContent = '';
-      dn.appendChild(inp);
-      inp.focus();
-    };
+    }
+    if (!dn.querySelector('input') && s.device_name) dn.textContent = s.device_name;
   }
   const hlth = $('healthMark'), stt = $('stateMark');
   hlth.className = 'mark ' + (s.health ? 'mark-ok' : 'mark-bad');
@@ -708,9 +717,13 @@ $('profileFileInput').onchange = () => {
   reader.onload = () => {
     try {
       const arr = JSON.parse(reader.result);
-      if (!Array.isArray(arr) || arr.length !== 24 || !Array.isArray(arr[0])) throw new Error('zły format');
-      profileEdited = false;
-      post('/api/profile', arr, true).then(() => refresh());
+      if (!Array.isArray(arr) || arr.length !== 24 || !arr.every(h => Array.isArray(h))) throw new Error('zły format');
+      /* Don't clear profileEdited / refresh until the server accepts the import,
+       * otherwise a rejected import silently wipes the "unsaved edits" flag. (#12) */
+      post('/api/profile', arr, true).then(r => {
+        if (r === 'ok') { profileEdited = false; refresh(); }
+        else alert('Import odrzucony: ' + (typeof r === 'string' ? r : 'serwer zwrócił błąd'));
+      });
     } catch (e) { alert('Nieprawidłowy plik profilu: ' + e.message); }
   };
   reader.readAsText(file);

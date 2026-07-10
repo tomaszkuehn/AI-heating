@@ -26,12 +26,12 @@
 static const char *TAG = "web";
 
 /* Embedded web assets (see main/CMakeLists.txt EMBED_FILES). */
-extern const unsigned char index_html_start[] asm("_binary_index_html_start");
-extern const unsigned char index_html_end[]   asm("_binary_index_html_end");
-extern const unsigned char style_css_start[]  asm("_binary_style_css_start");
-extern const unsigned char style_css_end[]    asm("_binary_style_css_end");
-extern const unsigned char app_js_start[]     asm("_binary_app_js_start");
-extern const unsigned char app_js_end[]       asm("_binary_app_js_end");
+extern const unsigned char index_html_start[] asm("_binary_index_html_gz_start");
+extern const unsigned char index_html_end[]   asm("_binary_index_html_gz_end");
+extern const unsigned char style_css_start[]  asm("_binary_style_css_gz_start");
+extern const unsigned char style_css_end[]    asm("_binary_style_css_gz_end");
+extern const unsigned char app_js_start[]     asm("_binary_app_js_gz_start");
+extern const unsigned char app_js_end[]       asm("_binary_app_js_gz_end");
 
 static system_config_t *s_cfg = NULL;
 static httpd_handle_t   s_srv = NULL;
@@ -62,7 +62,15 @@ static bool json_str(const char *j, const char *key, char *out, size_t len)
     if (!p || *p != '"') return false;
     p++;
     size_t i = 0;
-    while (*p && *p != '"' && i + 1 < len) out[i++] = *p++;
+    while (*p && i + 1 < len) {
+        if (*p == '"') break;                  /* closing quote              */
+        if (*p == '\\' && p[1]) {              /* keep escaped char literally */
+            out[i++] = p[1];
+            p += 2;
+        } else {
+            out[i++] = *p++;
+        }
+    }
     out[i] = '\0';
     return true;
 }
@@ -138,35 +146,65 @@ static bool qarg(httpd_req_t *req, const char *key, char *out, size_t len)
 #define CFG_LOCK() he_config_lock()
 #define CFG_RET(x) do { he_config_unlock(); return (x); } while (0)
 
-/* ---- static assets ---- */
+/* ---- static assets (gzip-embedded; browser decompresses) ---- */
 static esp_err_t h_index(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html; charset=utf-8");
+    httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
     size_t n = index_html_end - index_html_start;
     return httpd_resp_send(req, (const char *)index_html_start, n);
 }
 static esp_err_t h_css(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/css; charset=utf-8");
+    httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
     size_t n = style_css_end - style_css_start;
     return httpd_resp_send(req, (const char *)style_css_start, n);
 }
 static esp_err_t h_js(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/javascript; charset=utf-8");
+    httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
     size_t n = app_js_end - app_js_start;
     return httpd_resp_send(req, (const char *)app_js_start, n);
 }
 
 /* ---- /api/state ---- */
-static const char *qname(sensor_quality_t q)
+/* JSON-escape a NUL-terminated string into `out` (capacity `outlen` incl. NUL).
+ * Returns chars written (excl. NUL). User-controlled strings flow into JSON this
+ * way so a " / \ / control char can't break the response or inject a key. (#3) */
+static size_t json_escape(const char *in, char *out, size_t outlen)
 {
-    switch (q) {
-    case QUAL_OK: return "OK"; case QUAL_TIMEOUT: return "TIMEOUT";
-    case QUAL_OUT_OF_RANGE: return "OUT_OF_RANGE"; case QUAL_STALE: return "STALE";
-    case QUAL_WINDOW_OPEN: return "WINDOW_OPEN"; case QUAL_DISABLED: return "DISABLED";
-    case QUAL_SIMULATED: return "SIMULATED"; default: return "?";
+    if (!outlen) return 0;
+    size_t o = 0;
+    for (size_t i = 0; in[i] && o + 6 < outlen; i++) {
+        unsigned char c = (unsigned char)in[i];
+        if (c == '"' || c == '\\') { out[o++] = '\\'; out[o++] = (char)c; }
+        else if (c == '\n') { out[o++] = '\\'; out[o++] = 'n'; }
+        else if (c == '\t') { out[o++] = '\\'; out[o++] = 't'; }
+        else if (c == '\r') { out[o++] = '\\'; out[o++] = 'r'; }
+        else if (c < 0x20)  { o += snprintf(out + o, outlen - o, "\\u%04x", c); }
+        else                { out[o++] = (char)c; }   /* printable incl. UTF-8 */
     }
+    out[o] = '\0';
+    return o;
+}
+
+/* Strip JSON/SMTP metacharacters (", \, control <0x20) from a user-supplied name
+ * so it is safe to emit into JSON and to splice into an SMTP body/subject. Keeps
+ * printable text incl. UTF-8. In-place (in==out) is safe (o <= i). Returns true
+ * if the result is non-empty. (#3 -- also closes the sensor-name -> restart-email
+ * body SMTP-injection gap that B5's device_name-only assumption missed.) */
+static bool sanitize_name(const char *in, char *out, size_t outlen)
+{
+    size_t o = 0;
+    for (size_t i = 0; in[i] && o + 1 < outlen; i++) {
+        unsigned char c = (unsigned char)in[i];
+        if (c == '"' || c == '\\' || c < 0x20) continue;
+        out[o++] = (char)c;
+    }
+    out[o] = '\0';
+    return out[0] != '\0';
 }
 static const char *sname(control_state_t s)
 {
@@ -194,6 +232,9 @@ static esp_err_t h_state(httpd_req_t *req)
     size_t fs_total = 0, fs_used = 0; storage_fs_usage(&fs_total, &fs_used);
     storage_flash_wear_t fw; storage_get_flash_wear(&fw);
     char b[3200]; int p = 0;
+    char edname[HE_NAME_LEN * 6 + 1];
+    json_escape(s_cfg->device_name[0] ? s_cfg->device_name : HE_DEFAULT_DEVICE_NAME,
+                edname, sizeof(edname));
     int64_t now_us = esp_timer_get_time();
     int64_t now_unix = (int64_t)time(NULL);
     p += snprintf(b + p, sizeof(b) - p,
@@ -227,12 +268,14 @@ static esp_err_t h_state(httpd_req_t *req)
     for (int i = 0; i < s_cfg->sensor_count && p + 120 < (int)sizeof(b); i++) {
         sensor_t *s = &s_cfg->sensors[i];
         int age_s = s->last_update_ms ? (int)((now_us / 1000 - s->last_update_ms) / 1000) : 999;
+        char ename[HE_NAME_LEN * 6 + 1];
+        json_escape(s->name, ename, sizeof(ename));
         p += snprintf(b + p, sizeof(b) - p,
             "%s{\"id\":%d,\"name\":\"%s\",\"active\":%s,\"weight\":%.3f,"
             "\"calib\":%.2f,\"comfort\":%.2f,\"quality\":\"%s\",\"eff\":%.2f,"
             "\"raw\":%.2f,\"sim\":%s,\"window\":%s,\"last_seen\":%d}",
-            i ? "," : "", s->id, s->name, s->active ? "true" : "false",
-            s->weight, s->calib_offset, s->comfort_offset, qname(s->quality),
+            i ? "," : "", s->id, ename, s->active ? "true" : "false",
+            s->weight, s->calib_offset, s->comfort_offset, sensor_quality_name(s->quality),
             he_isnan(s->last_effective) ? -99.0f : s->last_effective,
             he_isnan(s->last_raw) ? -99.0f : s->last_raw,
             s->simulated ? "true" : "false", s->window_open ? "true" : "false",
@@ -241,11 +284,13 @@ static esp_err_t h_state(httpd_req_t *req)
     if (s_cfg->has_external) {
         sensor_t *e = &s_cfg->sensors[HE_MAX_SENSORS];
         int e_age = e->last_update_ms ? (int)((now_us / 1000 - e->last_update_ms) / 1000) : 999;
+        char ename[HE_NAME_LEN * 6 + 1];
+        json_escape(e->name, ename, sizeof(ename));
         p += snprintf(b + p, sizeof(b) - p,
             ",{\"id\":0,\"name\":\"%s\",\"active\":%s,\"weight\":0,\"calib\":0,"
             "\"comfort\":0,\"quality\":\"%s\",\"eff\":%.2f,\"raw\":%.2f,"
             "\"sim\":%s,\"window\":false,\"external\":true,\"last_seen\":%d}",
-            e->name, e->active ? "true" : "false", qname(e->quality),
+            ename, e->active ? "true" : "false", sensor_quality_name(e->quality),
             he_isnan(e->last_effective) ? -99.0f : e->last_effective,
             he_isnan(e->last_raw) ? -99.0f : e->last_raw,
             e->simulated ? "true" : "false", e_age);
@@ -265,7 +310,7 @@ static esp_err_t h_state(httpd_req_t *req)
         s_cfg->simulate_sensors ? "true" : "false",
         s_cfg->simulate_heating ? "true" : "false",
         s_cfg->sim_time_accel ? "true" : "false",
-        s_cfg->device_name[0] ? s_cfg->device_name : "Sterownik CO");
+        edname);
     CFG_RET(send_json(req, b));
 }
 
@@ -282,7 +327,7 @@ static esp_err_t h_sensor_post(httpd_req_t *req)
     else for (int i = 0; i < s_cfg->sensor_count; i++) if (s_cfg->sensors[i].id == id) { target = &s_cfg->sensors[i]; break; }
     if (!target) CFG_RET(send_text(req, "no such sensor", 400));
 
-    char name[HE_NAME_LEN]; if (json_str(body, "name", name, sizeof(name))) { strncpy(target->name, name, sizeof(target->name)-1); target->name[sizeof(target->name)-1]='\0'; }
+    char name[HE_NAME_LEN]; if (json_str(body, "name", name, sizeof(name)) && sanitize_name(name, name, sizeof(name))) { strncpy(target->name, name, sizeof(target->name)-1); target->name[sizeof(target->name)-1]='\0'; }
     bool b; float f;
     if (json_bool(body, "active", &b)) target->active = b;
     if (json_float(body, "weight", &f)) target->weight = he_clampf(f, 0.0f, 1.0f);
@@ -357,24 +402,34 @@ static esp_err_t h_profile_file(httpd_req_t *req)
     char name[32], op[8];
     if (!qarg(req, "name", name, sizeof(name))) return send_text(req, "missing name", 400);
     if (!qarg(req, "op", op, sizeof(op))) strcpy(op, "load");
-    CFG_LOCK();
+
     if (strcmp(op, "save") == 0) {
-        /* Accept optional body with profile JSON; fall back to active config. */
+        /* Read & validate the body BEFORE taking the config lock (mirrors
+         * h_profile_post). blen==0 is back-compat: persist the active profile.
+         * blen>0 with a parse/validate failure is a real error -> 400, NOT a
+         * silent fallback to the active profile (which would wipe the slot). */
         char body[700];
         int blen = read_body(req, body, sizeof(body));
         daily_profile_t p;
-        if (blen > 0 && profile_from_json(&p, body, blen)) {
-            if (storage_save_profile_file(name, &p) != ESP_OK) CFG_RET(send_text(req, "save failed", 500));
-        } else {
-            if (storage_save_profile_file(name, &s_cfg->profile) != ESP_OK) CFG_RET(send_text(req, "save failed", 500));
+        bool use_active = (blen <= 0);
+        if (!use_active) {
+            if (!profile_from_json(&p, body, blen)) return send_text(req, "bad profile json", 400);
+            int eh; char em[48];
+            if (!profile_validate(&p, &eh, em, sizeof(em))) return send_text(req, em, 400);
         }
-    } else {
-        daily_profile_t p;
-        if (storage_load_profile_file(name, &p) != ESP_OK) CFG_RET(send_text(req, "load failed", 500));
-        int eh; char em[48];
-        if (!profile_validate(&p, &eh, em, sizeof(em))) CFG_RET(send_text(req, "invalid profile file", 400));
-        s_cfg->profile = p; storage_save_config(s_cfg);
+        CFG_LOCK();
+        esp_err_t sv = storage_save_profile_file(name, use_active ? &s_cfg->profile : &p);
+        CFG_RET(sv == ESP_OK ? send_text(req, "ok", 200) : send_text(req, "save failed", 500));
     }
+
+    /* load: read & validate the file before locking to mutate the active profile. */
+    daily_profile_t p;
+    if (storage_load_profile_file(name, &p) != ESP_OK) return send_text(req, "load failed", 500);
+    int eh; char em[48];
+    if (!profile_validate(&p, &eh, em, sizeof(em))) return send_text(req, "invalid profile file", 400);
+    CFG_LOCK();
+    s_cfg->profile = p;
+    storage_save_config(s_cfg);
     CFG_RET(send_text(req, "ok", 200));
 }
 
@@ -397,15 +452,18 @@ static esp_err_t h_device(httpd_req_t *req)
 {
     char body[64]; read_body(req, body, sizeof(body));
     char name[32];
-    if (json_str(body, "name", name, sizeof(name))) {
-        CFG_LOCK();
-        strncpy(s_cfg->device_name, name, sizeof(s_cfg->device_name) - 1);
-        s_cfg->device_name[sizeof(s_cfg->device_name) - 1] = '\0';
-        storage_save_config(s_cfg);
-        he_config_unlock();
-        return send_text(req, "ok", 200);
-    }
-    return send_text(req, "missing name", 400);
+    if (!json_str(body, "name", name, sizeof(name))) return send_text(req, "missing name", 400);
+    /* Strip JSON/SMTP metacharacters so the name can't break the /api/state JSON
+     * or inject SMTP headers when it lands in a notification subject/body. Keeps
+     * printable text incl. UTF-8. Reject if nothing printable remains. (#3) */
+    if (!sanitize_name(name, name, sizeof(name))) return send_text(req, "invalid name", 400);
+
+    CFG_LOCK();
+    strncpy(s_cfg->device_name, name, sizeof(s_cfg->device_name) - 1);
+    s_cfg->device_name[sizeof(s_cfg->device_name) - 1] = '\0';
+    storage_save_config(s_cfg);
+    he_config_unlock();
+    return send_text(req, "ok", 200);
 }
 
 /* ---- /api/pump (POST) ---- */

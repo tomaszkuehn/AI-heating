@@ -300,20 +300,19 @@ void control_tick(int dt_ms)
         }
     }
 
-    /* Restart notification: once, 60s after boot, send email + SMS with
-     * device name and current system status. Gated on network up to avoid
-     * spurious send attempts while Wi-Fi is still connecting. */
+    /* Restart notification: once, 60s after REAL boot uptime (not the sim-scaled
+     * sdt accumulator, which with sim_time_accel x10 fired it at ~7s). Enqueue for
+     * off-loop delivery; the worker waits for the network, so no network_up gate
+     * here. (#15 / #2) */
     {
         static bool s_restart_notified = false;
-        static int  s_restart_age_s   = 0;
-        s_restart_age_s += sdt / 1000;
-        if (!s_restart_notified && s_restart_age_s >= 60) {
+        if (!s_restart_notified && control_now_ms() / 1000 >= 60) {
             s_restart_notified = true;
-            if (fault_manager_network_up() &&
-                (s_cfg->notify.email_enabled || s_cfg->notify.sms_enabled)) {
-                notification_send_restart(&s_cfg->notify,
+            if (s_cfg->notify.email_enabled || s_cfg->notify.sms_enabled) {
+                notification_dispatch_restart(&s_cfg->notify,
                     s_cfg->device_name, sys_temp, ext_temp,
-                    healthy, total, s_cfg->sensors, s_cfg->sensor_count);
+                    healthy, total, s_cfg->sensors, s_cfg->sensor_count,
+                    s_cfg->has_external);
             }
         }
     }

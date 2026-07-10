@@ -60,10 +60,10 @@ static void seed_defaults(system_config_t *c)
     c->emergency.enabled = false;
     c->emergency.on_seconds = 900;
     c->emergency.period_seconds = 3600;
-    c->fault_grace_sec = 300;
-    c->max_on_sec = 14400;
-    c->max_on_break_sec = 600;
-    strncpy(c->device_name, "Sterownik CO", sizeof(c->device_name) - 1);
+    c->fault_grace_sec = HE_DEFAULT_FAULT_GRACE_SEC;
+    c->max_on_sec = HE_DEFAULT_MAX_ON_SEC;
+    c->max_on_break_sec = HE_DEFAULT_MAX_ON_BREAK_SEC;
+    strncpy(c->device_name, HE_DEFAULT_DEVICE_NAME, sizeof(c->device_name) - 1);
     c->wifi_sta_mode = false;
     strncpy(c->wifi_ssid, HE_DEFAULT_AP_SSID, sizeof(c->wifi_ssid) - 1);
     strncpy(c->wifi_pass, HE_DEFAULT_AP_PASS, sizeof(c->wifi_pass) - 1);
@@ -82,6 +82,16 @@ static void repair_config(system_config_t *c)
     if (!c->wifi_sta_mode && strlen(c->wifi_pass) < 8) {
         strncpy(c->wifi_pass, HE_DEFAULT_AP_PASS, sizeof(c->wifi_pass) - 1);
         c->wifi_pass[sizeof(c->wifi_pass) - 1] = '\0';
+    }
+    /* Protection limits + device name: an upgraded/short-read NVS blob can leave
+     * these 0/empty. fault_grace_sec==0 in particular would trip NO_HEAT_RISE on
+     * the first heating tick (no zero-fallback historically). Clamp to defaults. */
+    if (c->fault_grace_sec < 60)  c->fault_grace_sec  = HE_DEFAULT_FAULT_GRACE_SEC;
+    if (c->max_on_sec < 60)       c->max_on_sec       = HE_DEFAULT_MAX_ON_SEC;
+    if (c->max_on_break_sec < 60) c->max_on_break_sec = HE_DEFAULT_MAX_ON_BREAK_SEC;
+    if (c->device_name[0] == '\0') {
+        strncpy(c->device_name, HE_DEFAULT_DEVICE_NAME, sizeof(c->device_name) - 1);
+        c->device_name[sizeof(c->device_name) - 1] = '\0';
     }
 }
 

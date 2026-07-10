@@ -1,5 +1,7 @@
 #include "notification_manager.h"
+#include "fault_manager.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -10,6 +12,7 @@
 #include "lwip/netdb.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 
 static const char *TAG = "notify";
 
@@ -28,6 +31,43 @@ static void diag_append(const char *fmt, ...)
     if (n > 0) s_diag_len += n;
     if (s_diag_len >= (int)sizeof(s_diag) - 1) s_diag_len = (int)sizeof(s_diag) - 1;
 }
+
+/* ---- Off-loop delivery queue (CODE_REVIEW #2 / #6) ----
+ * SMTP/SMS are blocking (seconds of DNS + TCP + SMTP handshake). Running them on
+ * the watchdog-subscribed control loop trips TWDT when the mail server is slow or
+ * unreachable. Trigger sites (control_engine restart, fault_manager alert) snapshot
+ * the needed fields under he_config_lock and enqueue a command here; a dedicated
+ * worker task performs the blocking I/O off the loop and is NOT subscribed to the
+ * task WDT. Queue depth 2 lets one alert queue behind a still-retrying restart. */
+typedef enum { NOTIFY_RESTART, NOTIFY_ALERT } notify_kind_t;
+
+typedef struct {
+    char     device_name[HE_NAME_LEN];
+    float    sys_temp;
+    float    ext_temp;
+    int      healthy;
+    int      total;
+    sensor_t sensors[HE_MAX_SENSORS + 1];  /* [0..n-1] internal; [HE_MAX_SENSORS] external */
+    int      sensor_count;
+    bool     has_external;
+} notify_restart_t;
+
+typedef struct {
+    fault_class_t fault;
+    char          message[96];
+} notify_alert_t;
+
+typedef struct {
+    notify_kind_t kind;
+    notify_cfg_t  cfg;
+    union {
+        notify_restart_t restart;
+        notify_alert_t   alert;
+    } u;
+} notify_cmd_t;
+
+#define NOTIFY_QUEUE_LEN 2
+static QueueHandle_t s_notify_queue = NULL;
 
 /* base64-encode `in` (NUL-terminated) into `out`; returns out. */
 static char *b64(const char *in, char *out, size_t outlen)
@@ -69,7 +109,8 @@ static void url_encode(const char *in, char *out, size_t outlen)
 }
 
 /* Copy `in` into `out` dropping CR/LF so it can't inject SMTP header/command
- * lines (email_to, subject, and single-line bodies come partly from config). */
+ * lines (email_to and subject come partly from config / device name). Applied to
+ * header fields only -- the body is sent raw to preserve its line structure. */
 static void sanitize_line(const char *in, char *out, size_t outlen)
 {
     size_t o = 0;
@@ -117,11 +158,14 @@ static bool smtp_send(const notify_cfg_t *c, const char *subject, const char *bo
     #define RECV() do { int n = recv(sock, rx, sizeof(rx)-1, 0); if (n<=0) { diag_append("RECV failed (timeout/close)\n"); goto done; } rx[n]=0; diag_append("S: %s", rx); } while (0)
     #define SEND(s) do { int L=strlen(s); if (send(sock,s,L,0)!=L) { diag_append("SEND failed\n"); goto done; } diag_append("C: %s", s); } while (0)
 
-    /* Sanitised header fields (config-supplied, must not inject CRLF). */
-    char rcpt[64], subj[64], msg[256], b64buf[128];
+    /* Sanitise header fields only (config / device-name supplied, must not inject
+     * CRLF). The body is sent raw in a separate SEND() below so its \r\n line
+     * structure is preserved and it cannot overflow tx (the restart body can
+     * approach 512 B). Safe because device_name is CRLF-free by write-time
+     * validation in the web layer (CODE_REVIEW #3). */
+    char rcpt[64], subj[128], b64buf[128];
     sanitize_line(c->email_to, rcpt, sizeof(rcpt));
     sanitize_line(subject, subj, sizeof(subj));
-    sanitize_line(body, msg, sizeof(msg));
 
     RECV();
     SEND("EHLO heating\r\n"); RECV();
@@ -133,10 +177,13 @@ static bool smtp_send(const notify_cfg_t *c, const char *subject, const char *bo
     snprintf(tx, sizeof(tx), "MAIL FROM:<heating@esp32.local>\r\n"); SEND(tx); RECV();
     snprintf(tx, sizeof(tx), "RCPT TO:<%s>\r\n", rcpt); SEND(tx); RECV();
     SEND("DATA\r\n"); RECV();
+    /* Headers, then the raw body, then the DATA terminator. */
     snprintf(tx, sizeof(tx),
-             "From: heating@esp32.local\r\nTo: %s\r\nSubject: %s\r\n\r\n%s\r\n.\r\n",
-             rcpt, subj, msg);
-    SEND(tx); RECV();
+             "From: heating@esp32.local\r\nTo: %s\r\nSubject: %s\r\n\r\n",
+             rcpt, subj);
+    SEND(tx);
+    if (body && body[0]) SEND(body);
+    SEND("\r\n.\r\n"); RECV();
     SEND("QUIT\r\n");
     close(sock);
     diag_append("OK: email accepted by server\n");
@@ -196,9 +243,85 @@ static bool sms_send(const notify_cfg_t *c, const char *message)
     return true;
 }
 
+/* Worker: drains the queue, performing blocking SMTP/SMS off the control loop.
+ * Not subscribed to esp_task_wdt (it may block for seconds on network I/O). */
+static void notify_worker_task(void *arg)
+{
+    notify_cmd_t cmd;
+    while (1) {
+        if (xQueueReceive(s_notify_queue, &cmd, portMAX_DELAY) != pdPASS) continue;
+        if (cmd.kind == NOTIFY_RESTART) {
+            /* Wait up to 30 s for Wi-Fi to come up before sending the restart
+             * notice, so an early-boot dispatch doesn't fail outright (#6 retry). */
+            int64_t deadline = esp_timer_get_time() + 30 * 1000000LL;
+            while (!fault_manager_network_up() && esp_timer_get_time() < deadline)
+                vTaskDelay(pdMS_TO_TICKS(500));
+            notification_send_restart(&cmd.cfg, cmd.u.restart.device_name,
+                cmd.u.restart.sys_temp, cmd.u.restart.ext_temp,
+                cmd.u.restart.healthy, cmd.u.restart.total,
+                cmd.u.restart.sensors, cmd.u.restart.sensor_count,
+                cmd.u.restart.has_external);
+        } else { /* NOTIFY_ALERT */
+            notification_send_alert(&cmd.cfg, cmd.u.alert.fault, cmd.u.alert.message);
+        }
+    }
+}
+
 void notification_init(void)
 {
-    ESP_LOGI(TAG, "notification manager ready");
+    s_notify_queue = xQueueCreate(NOTIFY_QUEUE_LEN, sizeof(notify_cmd_t));
+    if (!s_notify_queue) {
+        ESP_LOGE(TAG, "failed to create notify queue -- notifications disabled");
+        return;
+    }
+    /* prio 4 < control's 5; NOT subscribed to esp_task_wdt (blocks on SMTP/SMS).
+     * Stack must hold notify_cmd_t (~1.2 KB, lives here for the whole send) plus
+     * notification_send_restart (body[512]+subject) -> smtp_send (tx[512]+rx[256])
+     * -> lwip getaddrinfo/connect. The old code sent from the 6144-B control task
+     * WITHOUT the cmd on its stack; the worker adds that, so 5120 overflowed
+     * (observed: stack-overflow reset right after the first restart email). 10240
+     * gives comfortable margin; heap cost (~5 KB) is trivial vs the ~220 KB pool. */
+    xTaskCreate(notify_worker_task, "notify", 10240, NULL, 4, NULL);
+    ESP_LOGI(TAG, "notification manager ready (off-loop worker)");
+}
+
+void notification_dispatch_alert(const notify_cfg_t *cfg, fault_class_t f,
+                                 const char *message)
+{
+    if (!s_notify_queue || !cfg || !message) return;
+    notify_cmd_t cmd = {0};
+    cmd.kind = NOTIFY_ALERT;
+    cmd.cfg = *cfg;
+    cmd.u.alert.fault = f;
+    strncpy(cmd.u.alert.message, message, sizeof(cmd.u.alert.message) - 1);
+    if (xQueueSend(s_notify_queue, &cmd, 0) != pdPASS)
+        ESP_LOGW(TAG, "notify queue full -- alert dropped");
+}
+
+void notification_dispatch_restart(const notify_cfg_t *cfg, const char *device_name,
+    float sys_temp, float ext_temp, int healthy, int total,
+    const sensor_t *sensors, int sensor_count, bool has_external)
+{
+    if (!s_notify_queue || !cfg || !device_name || !sensors) return;
+    if (!cfg->email_enabled && !cfg->sms_enabled) return;
+    notify_cmd_t cmd = {0};
+    cmd.kind = NOTIFY_RESTART;
+    cmd.cfg = *cfg;
+    notify_restart_t *r = &cmd.u.restart;
+    strncpy(r->device_name, device_name, sizeof(r->device_name) - 1);
+    r->sys_temp = sys_temp;
+    r->ext_temp = ext_temp;
+    r->healthy = healthy;
+    r->total = total;
+    int n = sensor_count;
+    if (n < 0) n = 0;
+    if (n > HE_MAX_SENSORS) n = HE_MAX_SENSORS;
+    for (int i = 0; i < n; i++) r->sensors[i] = sensors[i];
+    r->sensor_count = n;
+    r->has_external = has_external;
+    if (has_external) r->sensors[HE_MAX_SENSORS] = sensors[HE_MAX_SENSORS];
+    if (xQueueSend(s_notify_queue, &cmd, 0) != pdPASS)
+        ESP_LOGW(TAG, "notify queue full -- restart notice dropped");
 }
 
 void notification_send_alert(const notify_cfg_t *cfg, fault_class_t f,
@@ -220,13 +343,25 @@ void notification_send_alert(const notify_cfg_t *cfg, fault_class_t f,
 
 void notification_send_restart(const notify_cfg_t *cfg, const char *device_name,
     float sys_temp, float ext_temp, int healthy, int total,
-    const sensor_t *sensors, int sensor_count)
+    const sensor_t *sensors, int sensor_count, bool has_external)
 {
-    if (!cfg || !device_name) return;
+    if (!cfg || !device_name || !sensors) return;
     if (!cfg->email_enabled && !cfg->sms_enabled) return;
 
-    char subject[64];
-    snprintf(subject, sizeof(subject), "[%s] RESTART", device_name);
+    /* Subject: RFC 2047 encoded-word when the device name holds non-ASCII (Polish
+     * diacritics) so strict MTAs don't mangle or reject the header. The brackets
+     * and "RESTART" stay plain (the subject is an unstructured field). (#13) */
+    char subject[128];
+    bool ascii = true;
+    for (const char *p = device_name; *p; p++)
+        if ((unsigned char)*p >= 0x80) { ascii = false; break; }
+    if (ascii) {
+        snprintf(subject, sizeof(subject), "[%s] RESTART", device_name);
+    } else {
+        char enc[64];
+        b64(device_name, enc, sizeof(enc));
+        snprintf(subject, sizeof(subject), "[=?UTF-8?B?%s?=] RESTART", enc);
+    }
 
     /* Email body with detailed system status. */
     char body[512];
@@ -248,24 +383,28 @@ void notification_send_restart(const notify_cfg_t *cfg, const char *device_name,
     }
     for (int i = 0; i < sensor_count && pos + 64 < (int)sizeof(body); i++) {
         const sensor_t *s = &sensors[i];
-        const char *qname = "?";
-        switch (s->quality) {
-        case QUAL_OK: qname = "OK"; break;
-        case QUAL_TIMEOUT: qname = "TIMEOUT"; break;
-        case QUAL_OUT_OF_RANGE: qname = "OUT_OF_RANGE"; break;
-        case QUAL_STALE: qname = "STALE"; break;
-        case QUAL_WINDOW_OPEN: qname = "WINDOW_OPEN"; break;
-        case QUAL_DISABLED: qname = "DISABLED"; break;
-        case QUAL_SIMULATED: qname = "SIMULATED"; break;
-        }
         pos += snprintf(body + pos, sizeof(body) - pos,
             "Czujnik %d (%s): %s, %.2f C\r\n",
-            s->id, s->name[0] ? s->name : "?", qname,
+            s->id, s->name[0] ? s->name : "?",
+            sensor_quality_name(s->quality),
             he_isnan(s->last_effective) ? -99.0f : s->last_effective);
     }
+    /* External sensor (id 0) lives at sensors[HE_MAX_SENSORS]; report it when
+     * configured so the restart notice includes the outdoor reading. (#14) */
+    if (has_external && pos + 64 < (int)sizeof(body)) {
+        const sensor_t *e = &sensors[HE_MAX_SENSORS];
+        pos += snprintf(body + pos, sizeof(body) - pos,
+            "Czujnik zew. (%s): %s, %.2f C\r\n",
+            e->name[0] ? e->name : "Zewnatrz",
+            sensor_quality_name(e->quality),
+            he_isnan(e->last_effective) ? -99.0f : e->last_effective);
+    }
+
+    /* Reset the SMTP diagnostic unconditionally (matches notification_send_alert)
+     * so a later test-email probe doesn't surface stale output. */
+    s_diag[0] = '\0'; s_diag_len = 0;
 
     if (cfg->email_enabled && cfg->email_to[0]) {
-        s_diag[0] = '\0'; s_diag_len = 0;
         if (!smtp_send(cfg, subject, body))
             ESP_LOGW(TAG, "restart email failed");
     }

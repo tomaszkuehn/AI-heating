@@ -158,6 +158,10 @@ float he_nan(void);
 bool  he_isnan(float v);
 float he_clampf(float v, float lo, float hi);
 
+/* Short string name for a sensor quality value (shared by the web UI and the
+ * notification emails — single source of truth instead of triplicated switches). */
+const char *sensor_quality_name(sensor_quality_t q);
+
 /* True once the wall clock has been set (SNTP) — history/aggregation must not
  * timestamp records before this is true (they would land in 1970).           */
 bool  he_time_valid(void);
