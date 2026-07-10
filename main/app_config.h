@@ -45,6 +45,12 @@ extern "C" {
 #define HE_DEFAULT_MAX_ON_SEC       14400      /* max continuous heating (4 h)  */
 #define HE_DEFAULT_MAX_ON_BREAK_SEC 600        /* forced break after max-on      */
 
+/* ---- Emergency periodic mode defaults ---- */
+#define HE_DEFAULT_EMERGENCY_ENABLED         false
+#define HE_DEFAULT_EMERGENCY_ON_SEC          900   /* 15 min ON within the cycle  */
+#define HE_DEFAULT_EMERGENCY_PERIOD_SEC      3600  /* 60 min cycle                 */
+#define HE_DEFAULT_EMERGENCY_ON_SENSOR_FAULT false /* opt-in: emergency duty cycle when all sensors fail */
+
 #ifdef __cplusplus
 }
 #endif

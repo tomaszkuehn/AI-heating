@@ -300,17 +300,21 @@ static esp_err_t h_state(httpd_req_t *req)
     char prof[600]; profile_to_json(&s_cfg->profile, prof, sizeof(prof));
     p += snprintf(b + p, sizeof(b) - p,
         "\"profile\":%s,\"pump\":{\"enabled\":%s,\"impulse\":%d,\"period\":%d,\"total\":%d},"
-        "\"emergency\":{\"enabled\":%s,\"on\":%d,\"period\":%d},"
-        "\"sim_sensors\":%s,\"sim_heating\":%s,\"sim_accel\":%s,\"device_name\":\"%s\"}",
+        "\"emergency\":{\"enabled\":%s,\"on\":%d,\"period\":%d,\"on_fault\":%s},"
+        "\"sim_sensors\":%s,\"sim_heating\":%s,\"sim_accel\":%s,\"device_name\":\"%s\","
+        "\"notify_ev\":{\"faults\":%s,\"restart\":%s}}",
         prof,
         s_cfg->pump.enabled ? "true" : "false", s_cfg->pump.impulse_seconds,
         s_cfg->pump.period_seconds, s_cfg->pump.total_seconds,
         s_cfg->emergency.enabled ? "true" : "false", s_cfg->emergency.on_seconds,
         s_cfg->emergency.period_seconds,
+        s_cfg->emergency_on_sensor_fault ? "true" : "false",
         s_cfg->simulate_sensors ? "true" : "false",
         s_cfg->simulate_heating ? "true" : "false",
         s_cfg->sim_time_accel ? "true" : "false",
-        edname);
+        edname,
+        s_cfg->notify_ev_faults ? "true" : "false",
+        s_cfg->notify_ev_restart ? "true" : "false");
     CFG_RET(send_json(req, b));
 }
 
@@ -489,6 +493,24 @@ static esp_err_t h_emergency(httpd_req_t *req)
     if (json_bool(body, "enabled", &en)) s_cfg->emergency.enabled = en;
     if (json_int(body, "on", &i)) s_cfg->emergency.on_seconds = i;
     if (json_int(body, "period", &i)) s_cfg->emergency.period_seconds = i;
+    if (json_bool(body, "on_fault", &en)) s_cfg->emergency_on_sensor_fault = en;
+    storage_save_config(s_cfg);
+    CFG_RET(send_text(req, "ok", 200));
+}
+
+/* ---- /api/notify/events (POST: per-event-type e-mail subscription) ----
+ * Separate from /api/notify so toggling these does not touch (and blank) the
+ * SMTP/SMS fields the existing btnNotify save writes, and so we can stamp the
+ * notify_ev_ver sentinel here to protect the user's choice from a future
+ * repair_config re-default. */
+static esp_err_t h_notify_events(httpd_req_t *req)
+{
+    char body[128]; read_body(req, body, sizeof(body));
+    bool en;
+    CFG_LOCK();
+    if (json_bool(body, "faults", &en))  s_cfg->notify_ev_faults  = en;
+    if (json_bool(body, "restart", &en)) s_cfg->notify_ev_restart = en;
+    s_cfg->notify_ev_ver = 1;   /* user has configured -> protect from future re-default */
     storage_save_config(s_cfg);
     CFG_RET(send_text(req, "ok", 200));
 }
@@ -766,6 +788,7 @@ static httpd_uri_t regs[] = {
     { .uri = "/api/pump",    .method = HTTP_POST, .handler = h_pump,         .user_ctx = NULL },
     { .uri = "/api/emergency", .method = HTTP_POST, .handler = h_emergency,  .user_ctx = NULL },
     { .uri = "/api/notify",  .method = HTTP_POST, .handler = h_notify,       .user_ctx = NULL },
+    { .uri = "/api/notify/events", .method = HTTP_POST, .handler = h_notify_events, .user_ctx = NULL },
     { .uri = "/api/notify/test", .method = HTTP_POST, .handler = h_notify_test, .user_ctx = NULL },
     { .uri = "/api/network", .method = HTTP_POST, .handler = h_network,      .user_ctx = NULL },
     { .uri = "/api/sim/sensor",  .method = HTTP_POST, .handler = h_sim_sensor,  .user_ctx = NULL },

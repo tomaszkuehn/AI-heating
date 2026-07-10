@@ -57,9 +57,13 @@ static void seed_defaults(system_config_t *c)
     c->pump.impulse_seconds = 5;
     c->pump.period_seconds = 120;
     c->pump.total_seconds = 600;
-    c->emergency.enabled = false;
-    c->emergency.on_seconds = 900;
-    c->emergency.period_seconds = 3600;
+    c->emergency.enabled = HE_DEFAULT_EMERGENCY_ENABLED;
+    c->emergency.on_seconds = HE_DEFAULT_EMERGENCY_ON_SEC;
+    c->emergency.period_seconds = HE_DEFAULT_EMERGENCY_PERIOD_SEC;
+    c->emergency_on_sensor_fault = HE_DEFAULT_EMERGENCY_ON_SENSOR_FAULT;
+    /* notify_ev_* are intentionally left 0 from memset; repair_config() applies the
+     * ON defaults once via the notify_ev_ver sentinel (so first boot and upgrade
+     * both preserve the pre-feature behavior of always e-mailing faults+restart). */
     c->fault_grace_sec = HE_DEFAULT_FAULT_GRACE_SEC;
     c->max_on_sec = HE_DEFAULT_MAX_ON_SEC;
     c->max_on_break_sec = HE_DEFAULT_MAX_ON_BREAK_SEC;
@@ -92,6 +96,15 @@ static void repair_config(system_config_t *c)
     if (c->device_name[0] == '\0') {
         strncpy(c->device_name, HE_DEFAULT_DEVICE_NAME, sizeof(c->device_name) - 1);
         c->device_name[sizeof(c->device_name) - 1] = '\0';
+    }
+    /* Per-event-type e-mail subscription: an upgraded device zero-fills these tail
+     * fields (notify_ev_ver==0). Preserve the pre-feature behavior — faults+restart
+     * always e-mailed — by defaulting both ON once. Afterwards the user's choice
+     * sticks (ver stays 1, so an explicit OFF is respected on later boots). */
+    if (c->notify_ev_ver == 0) {
+        c->notify_ev_faults  = true;
+        c->notify_ev_restart = true;
+        c->notify_ev_ver = 1;
     }
 }
 

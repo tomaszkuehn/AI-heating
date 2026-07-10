@@ -374,3 +374,77 @@ zdeduplikowane wiersze (F1); `POST /api/log/clear` → `ok`, `/api/log` → `[]`
 `fault=NONE`, `time_synced=true` (F2/F5). `daily.csv deduped (N -> N rows)` w
 logu pierwszego startu (drugi start: plik czysty → brak przepisania → brak
 komunikatu, zgodnie z oczekiwaniem).
+
+---
+
+## Addendum — awaryjne grzanie po awarii czujników + konfigurowane powiadomienia e-mail (2026-07-10)
+
+Dwie nowe funkcje (przejmij-ster → fix → build → flash COM3 bez erase →
+weryfikacja na żywym module 10.168.34.11 → docs → commit). App 0xf79b0 →
+0xf7cf0 (+832 B; 33 KB wolnego w partycji 1 MB). Brak warningów kompilatora.
+
+### Feature 1 — `emergency_on_sensor_fault` (warunkowy tryb awaryjny)
+
+Domyślnie utrata wszystkich aktywnych czujników wewn. → `FAULT_SENSOR_IFACE` →
+`ST_FAULT`/przekaźnik OFF (bezpieczne wobec błędnych danych, ale ryzyko
+wymarznięcia przy długiej awarii). Opcja **opt-in** (`emergency_on_sensor_fault`,
+default **false**) podtrzymuje duty cycle (`emergency.on_seconds`/`period_seconds`,
+współdzielone z bezwarunkowym `emergency.enabled`) przez czas trwania awarii
+zamiast OFF.
+
+- **Projekt:** wariant **warunkowy** odrębny od istniejącego **bezwarunkowego**
+  `emergency.enabled` (rung 3 drabiny, tłumi histerezę nawet przy sprawnych
+  czujnikach). Nowa ścieżka w rungu 4 (fault): `s_cfg->emergency_on_sensor_fault
+  && fault_manager_current() == FAULT_SENSOR_IFACE` → `emergency_duty()`,
+  inaczej `ST_FAULT`/OFF jak dawniej.
+- **DRY:** duty cycle wydzielone do helpera `emergency_duty()` (współdzielony
+  `s_em_phase_ms` + on/period) — rung 3 i warunkowa ścieżka rungu 4 nie dublują
+  logiki.
+- **NVS upgrade-safety:** pole dołączone na **końcu** `system_config_t` (po
+  `max_on_break_sec`). Krótki odczyt z NVS zero-filluje nieprzeczytany ogon →
+  `false` = bezpieczny opt-in default (bez sentinela). Nie dotyka `notify_cfg_t`
+  (w środku struktury — jej modyfikacja przesunęłaby `wifi_ssid`+ i zepsuła NVS).
+- **Auto-clear:** po odzyskaniu choć jednego czujnika `FAULT_SENSOR_IFACE`
+  kasuje się samoczynnie (istniejące `fault_manager.c:170-172`) → powrót do
+  histerezy w ~1 tick. W trybie symulacji `enter_state` nie jest wołane, ale
+  `fault_manager_observe` nadal podnosi `FAULT_SENSOR_IFACE`, więc rung 4 je
+  wykrywa (warunek opiera się na `fault_manager_current()`, nie `enter_state`).
+- **Weryfikacja (żywy moduł, sym ×10, on=30/period=60):** `on_fault=true` +
+  disable ostatniego czujnika → `fault=SENSOR_IFACE`, `heating` pulsuje ON/OFF
+  (duty cycle, **nie** stałe false = ST_EMERGENCY_CYCLIC). Re-enable czujnika →
+  `fault=NONE` w ~1 s, `heating` wraca do histerezy. `on_fault=false` + ponowny
+  disable → `fault=SENSOR_IFACE`, `heating=false` **stałe** (ST_FAULT/OFF —
+  dotychczasowe zachowanie, zero regresji).
+
+### Feature 2 — `notify_ev_faults` / `notify_ev_restart` (konfigurowane powiadomienia)
+
+Przełączniki włącz/wyłącz powiadomień o **awariach** (coarse — jeden dla wszystkich
+klas) i o **resecie**. Default oba **WŁ** (zachowanie dotychczasowe). Poza
+zakresem: powiadomienia o zmianach stanu i jakości czujników (nie wybrane przez
+użytkownika).
+
+- **Bramkowanie dispatch-level:** `fault_manager.c` `raise_fault` → `if (s_cfg
+  && !s_notified && s_cfg->notify_ev_faults)`; `control_engine.c` bramka
+  restartu → `&& s_cfg->notify_ev_restart`. Wyłączenie „awarii" wyłącza i e-mail,
+  i SMS dla awarii (jeden przełącznik, wspólny dispatch obu kanałów).
+- **NVS upgrade-safety + sentinel:** pola na końcu `system_config_t` po
+  `emergency_on_sensor_fault`. `false` od upgrade byłby nieodróżnialny od
+  „użytkownik wyłączył" → cicha regresja (brak e-maili). Sentinel `notify_ev_ver`:
+  `repair_config` przy `ver==0` ustawia oba WŁ jednorazowo i podbija `ver=1`;
+  potem wybór użytkownika jest chroniony (explicit OFF trzyma się na `ver=1`).
+  `seed_defaults` nie tyka `notify_ev_*` (zostawia 0 z memset → sentinel
+  defaultuje jednorazowo).
+- **Endpoint osobny:** `POST /api/notify/events` (`h_notify_events`) zamiast
+  dołączenia do `/api/notify` — przełączniki są na `system_config_t`, a nie w
+  `notify_cfg_t`; izolacja od footguna: istniejący `btnNotify` zapisuje (i mógłby
+  wyzerować) pola SMTP przy save, gdyby je pominąć. Stempel `notify_ev_ver=1`
+  ustawiany tu, chroni wybór przed przyszłym `repair_config` re-default.
+- **/api/state:** emituje `notify_ev:{faults,restart}` (same boole — **bez**
+  `smtp_pass`/sekretów, te pozostają write-only; pre-existing gap echo pozostałych
+  pól notify poza zakresem).
+- **Weryfikacja (żywy moduł):** `POST /api/notify/events {faults:false,
+  restart:true}` → `/api/state` `notify_ev.faults=false`; toggle w obie strony
+  potwierdzone; restore both=true (default). Upgrade (flash bez erase): po
+  starcie `/api/state` `notify_ev.faults=true,restart=true` (sentinel zadziałał —
+  brak regresji), `emergency.on_fault=false` (default opt-in), `device_name=
+  "Sterownik Grota"` + NVS zachowane. Uptime narasta po flashu bez rebootu.

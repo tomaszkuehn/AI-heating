@@ -294,12 +294,17 @@ function renderModes(s) {
     $('pumpEn').checked = s.pump.enabled; $('pumpImpulse').value = s.pump.impulse;
     $('pumpPeriod').value = s.pump.period; $('pumpTotal').value = s.pump.total;
     $('emEn').checked = s.emergency.enabled; $('emOn').value = s.emergency.on; $('emPeriod').value = s.emergency.period;
+    $('emFault').checked = s.emergency.on_fault;
     $('simHeat').checked = s.sim_heating; $('simMixed').checked = false;
     $('simAccel').checked = s.sim_accel;
     /* protection limits */
     if ($('limGrace')) $('limGrace').value = s.fault_grace_sec || 300;
     if ($('limMaxOn')) $('limMaxOn').value = s.max_on_sec || 14400;
     if ($('limBreak')) $('limBreak').value = s.max_on_break_sec || 600;
+    /* per-event-type e-mail subscription (safe booleans; the SMTP/SMS fields above
+     * stay write-only on purpose — never echo secrets back to the browser). */
+    if ($('nEvFaults'))  $('nEvFaults').checked  = s.notify_ev.faults;
+    if ($('nEvRestart')) $('nEvRestart').checked = s.notify_ev.restart;
   }
 }
 
@@ -669,7 +674,7 @@ $('btnLogClear').onclick = () => {
   }
 };
 $('btnPump').onclick = () => post('/api/pump', { enabled: $('pumpEn').checked, impulse: +$('pumpImpulse').value, period: +$('pumpPeriod').value, total: +$('pumpTotal').value }, true).then(() => refresh());
-$('btnEm').onclick = () => post('/api/emergency', { enabled: $('emEn').checked, on: +$('emOn').value, period: +$('emPeriod').value }, true).then(() => refresh());
+$('btnEm').onclick = () => post('/api/emergency', { enabled: $('emEn').checked, on: +$('emOn').value, period: +$('emPeriod').value, on_fault: $('emFault').checked }, true).then(() => refresh());
 $('btnNet').onclick = () => post('/api/network', { sta_mode: $('netSta').checked, ssid: $('netSsid').value, pass: $('netPass').value }, true).then(() => refresh());
 $('btnNotify').onclick = () => post('/api/notify', { email_enabled: $('nEmail').checked, email_to: $('nEmailTo').value, smtp_host: $('nSmtpHost').value, smtp_user: $('nSmtpUser').value, smtp_pass: $('nSmtpPass').value, sms_enabled: $('nSms').checked, sms_phone: $('nSmsPhone').value, sms_gateway: $('nSmsGw').value }, true).then(() => refresh());
 $('btnNotifyTest').onclick = async () => {
@@ -685,6 +690,7 @@ $('btnNotifyTest').onclick = async () => {
     res.textContent = 'Brak odpowiedzi z serwera';
   }
 };
+$('btnNotifyEv').onclick = () => post('/api/notify/events', { faults: $('nEvFaults').checked, restart: $('nEvRestart').checked }, true).then(() => refresh());
 $('btnSimHeat').onclick = () => post('/api/sim/heating', { enabled: $('simHeat').checked, mixed: $('simMixed').checked, accel: $('simAccel').checked, mode: +$('simMode').value, heat_rate: +$('simHR').value, cool_rate: +$('simCR').value, inertia: +$('simIn').value }, true).then(() => refresh()).then(load24h);
 $('btnSimSen').onclick = () => post('/api/sim/sensor?id=' + $('simSenId').value, { src: +$('simSenSrc').value, base: +$('simSenBase').value, rate: 0.1, target: 0 }, true).then(() => refresh()).then(load24h);
 $('btnProfileApply').onclick = () => { profileEdited = false; post('/api/profile', collectProfile(), true).then(() => refresh()); };

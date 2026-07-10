@@ -145,6 +145,7 @@
       <label>Czas ON (s)<input type="number" id="emOn" class="inp"></label>
       <label>Okres (s)<input type="number" id="emPeriod" class="inp"></label>
     </div>
+    <label><input type="checkbox" id="emFault"> awaryjne grzanie przy awarii WSZYSTKICH czujników (Czas ON / Okres jak wyżej)</label>
     <button id="btnEm" class="btn">Zapisz</button>
   </section>
 
@@ -182,6 +183,10 @@
     <button id="btnNotify" class="btn">Zapisz</button>
     <button id="btnNotifyTest" class="btn" style="margin-left:8px">Testuj e-mail</button>
     <pre id="notifyResult" style="font-size:11px;color:var(--muted);margin-top:8px;white-space:pre-wrap;max-height:200px;overflow:auto;display:none"></pre>
+    <h3 style="margin:8px 0 4px">Typy zdarzeń (e-mail)</h3>
+    <label><input type="checkbox" id="nEvFaults"> powiadomienia o awariach</label>
+    <label><input type="checkbox" id="nEvRestart"> powiadomienia o resecie</label>
+    <button id="btnNotifyEv" class="btn" style="margin-top:4px">Zapisz typy zdarzeń</button>
   </section>
 
   <!-- Simulation -->

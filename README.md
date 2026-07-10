@@ -335,10 +335,19 @@ priorytecie wykrycia).
 - **Zakończenie:** **automatyczne** — gdy choć jeden czujnik wróci do zdrowia
   (`healthy_sensors > 0`), awaria jest kasowana samoczynnie (analogicznie do
   `FAULT_NETWORK`).
-- **Akcje i rezultat:** stan sterownika przechodzi w `ST_FAULT`, **przekaźnik
-  wyłączony** (`target_relay = false`) — brak wiarygodnych danych = brak grzania
-  ze zwykłej histerezy. Jeśli włączony jest tryb awaryjny cykliczny, ma on
-  wyższy priorytet i podtrzymuje minimalne grzanie mimo braku czujników.
+- **Akcje i rezultat:** domyślnie stan sterownika przechodzi w `ST_FAULT`,
+  **przekaźnik wyłączony** (`target_relay = false`) — brak wiarygodnych danych =
+  brak grzania ze zwykłej histerezy. Bezwarunkowy tryb awaryjny cykliczny
+  (`emergency.enabled`) ma wyższy priorytet i podtrzymuje minimalne grzanie mimo
+  braku czujników (działa też przy sprawnych czujnikach). Dodatkowo opcja
+  **`emergency_on_sensor_fault`** (domyślnie **WYŁ**) zmienia zachowanie tylko
+  dla tej awarii: zamiast `ST_FAULT`/OFF utrzymuje ten sam duty cycle
+  (`on_seconds` co `period_seconds`) przez czas trwania `FAULT_SENSOR_IFACE` —
+  ochrona przeciwzamrożeniowa na wypadek długiej awarii czujników. Jest to
+  wariant **warunkowy** (tylko gdy awaria aktywna), w przeciwieństwie do
+  bezwarunkowego `emergency.enabled`; oba współdzielą parametry `on`/`period` i
+  akumulator fazy. Po odzyskaniu choć jednego czujnika awaria kasuje się
+  samoczynnie i sterowanie wraca do histerezy.
 
 #### `FAULT_NO_HEAT_RISE` — brak wzrostu temperatury przy grzaniu
 - **Warunek:** grzanie aktywne dłużej niż karencja `fault_grace_sec` (domyślnie
@@ -408,6 +417,7 @@ awaryjny → awaria → histereza normalna. Każda **zmiana stanu** jest logowan
 | **Kill switch** | przycisk „Wyłącz ogrzewanie" (`/api/heating?disable=1`) z potwierdzeniem „Na pewno?" | ponowne włączenie tym samym przyciskiem (zielony „Włącz ogrzewanie") | najwyższy priorytet: przekaźnik OFF, stan `ST_IDLE`, ignoruje profil i BOOST; status pieca pokazuje szare koło z ✕ i podpis „Wyłączony" |
 | **Wybieg pompy** | przejście `HEATING → OFF` przy `pump.enabled` | upływ `total_seconds` | stan `ST_PUMP_OVERRUN`: krótkie impulsy (`impulse_seconds` co `period_seconds`) rozpraszają ciepło resztkowe |
 | **Tryb awaryjny cykliczny** | `emergency.enabled` | wyłączenie opcji | stan `ST_EMERGENCY_CYCLIC`: ON przez `on_seconds` co `period_seconds` niezależnie od czujników — ochrona przeciwzamrożeniowa gdy brak danych |
+| **Awaryjne grzanie po awarii czujników** | `emergency_on_sensor_fault` + aktywne `FAULT_SENSOR_IFACE` | odzyskanie choć jednego czujnika (auto-clear awarii) | jak wyżej — duty cycle `on_seconds`/`period_seconds`, ale **warunkowo** (tylko na czas awarii, domyślnie WYŁ); bezwarunkowy `emergency.enabled` ma priorytet |
 | **Tryb symulacji** | włączona symulacja czujników/ogrzewania | wyłączenie | stan `ST_SIMULATION`; decyzja ON/OFF liczona jak zwykle, ale GPIO nie jest sterowane (chyba że tryb mieszany) |
 
 ### D. Zdarzenia sieciowe i czasu (`network_manager.c`)
@@ -438,6 +448,21 @@ pola pod lockiem i odkładają komendę bez blokowania (głębokość kolejki 2;
   restartu: `[nazwa urządzenia] RESTART` (non-ASCII → RFC 2047). Treść = opis
   awarii / szczegółowy raport restartu (patrz „Powiadomienie po restarcie").
   Błędy wysyłki są logowane, ale nie blokują sterowania.
+- **Konfigurowane typy zdarzeń:** przełączniki w karcie „Powiadomienia"
+  (podsekcja „Typy zdarzeń (e-mail)", `POST /api/notify/events`) decydują, czy
+  dana kategoria generuje powiadomienie:
+  - `notify_ev_faults` — powiadomienia o awariach (domyślnie **WŁ**),
+  - `notify_ev_restart` — powiadomienie o resecie (domyślnie **WŁ**).
+  Oba domyślnie WŁ zachowują dotychczasowe zachowanie (e-mail przy każdej
+  awarii i przy resecie). Wyłączenie „awarii" wyłącza i e-mail, i SMS dla awarii
+  (bramkowanie na poziomie dispatch, wspólnym dla obu kanałów). Pola są
+  przechowywane w `system_config_t` (nie w `notify_cfg_t`); ponieważ `false` od
+  upgrade byłby nieodróżnialny od „użytkownik wyłączył", stosujemy sentinel
+  `notify_ev_ver`: przy pierwszym boot/upgrade `repair_config` ustawia oba na WŁ
+  jednorazowo, a następnie ustawienia użytkownika są chronione (`ver=1`).
+  Stan przełączników jest udostępniany w `/api/state` (`notify_ev`), bez
+  ujawniania sekretów SMTP (te pozostają write-only). Poza zakresem:
+  powiadomienia o zmianach stanu i jakości czujników.
 
 #### Diagnostyka i testowanie e-mail (przycisk „Testuj e-mail")
 

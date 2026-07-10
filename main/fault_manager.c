@@ -71,7 +71,11 @@ static void raise_fault(fault_class_t f, const char *text)
         s_last_log_fault = f;
         s_last_log_us = now_us;
     }
-    if (s_cfg && !s_notified) {
+    /* Dispatch the alert only when the user subscribes to fault notifications
+     * (notify_ev_faults, default ON to preserve the pre-feature behavior). The
+     * dispatch is off-loop and one-shot per fault lifecycle (s_notified resets on
+     * clear), so a re-raise after recovery+failure fires a fresh notification. */
+    if (s_cfg && !s_notified && s_cfg->notify_ev_faults) {
         notification_dispatch_alert(&s_cfg->notify, f, text);
         s_notified = true;
     }

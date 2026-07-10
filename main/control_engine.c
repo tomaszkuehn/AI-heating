@@ -113,6 +113,21 @@ static void enter_state(control_state_t next, control_state_t *target)
     storage_log_event(FAULT_NONE, 0, buf);
 }
 
+/* Drive the emergency cyclic duty cycle from s_cfg->emergency on/period.
+ * Shared by the unconditional emergency mode (precedence 3) and the conditional
+ * emergency-on-sensor-fault path (precedence 4). Advances the shared s_em_phase_ms
+ * accumulator by the time-scaled tick sdt; relay ON while phase < on-window. */
+static void emergency_duty(control_state_t *state, bool *relay, int sdt)
+{
+    int period = s_cfg->emergency.period_seconds * 1000;
+    int ontime = s_cfg->emergency.on_seconds * 1000;
+    if (period <= 0) period = 3600000;
+    if (ontime <= 0) ontime = 900000;
+    s_em_phase_ms = (s_em_phase_ms + sdt) % period;
+    *state = ST_EMERGENCY_CYCLIC;
+    *relay  = (s_em_phase_ms < ontime);
+}
+
 /* Decide the relay command from the temperature profile & hysteresis. */
 static bool hysteresis_decision(float sys_temp, int hour, bool currently_on)
 {
@@ -203,21 +218,25 @@ void control_tick(int dt_ms)
             target_relay = true;
         }
     }
-    /* Precedence 3: emergency periodic mode (spec 6.4). */
+    /* Precedence 3: emergency periodic mode (spec 6.4) — unconditional duty cycle
+     * while emergency is enabled (suppresses normal hysteresis even when sensors
+     * are healthy). The conditional sensor-fault variant lives in precedence 4. */
     else if (s_cfg->emergency.enabled) {
-        int period = s_cfg->emergency.period_seconds * 1000;
-        int ontime = s_cfg->emergency.on_seconds * 1000;
-        if (period <= 0) period = 3600000;
-        if (ontime <= 0) ontime = 900000;
-        s_em_phase_ms = (s_em_phase_ms + sdt) % period;
-        target_state = ST_EMERGENCY_CYCLIC;
-        target_relay = (s_em_phase_ms < ontime);
+        emergency_duty(&target_state, &target_relay, sdt);
     }
-    /* Precedence 4: active fault (unless emergency above handled it). */
+    /* Precedence 4: active fault (unless emergency above handled it). With the
+     * emergency_on_sensor_fault option on, a total internal-sensor failure
+     * (FAULT_SENSOR_IFACE) keeps minimal anti-freeze heating via the same duty cycle
+     * instead of going relay-OFF; all other faults still drop to ST_FAULT/OFF. */
     else if (fault_manager_current() != FAULT_NONE &&
              fault_manager_current() != FAULT_NETWORK) {
-        target_state = ST_FAULT;
-        target_relay = false;
+        if (s_cfg->emergency_on_sensor_fault &&
+            fault_manager_current() == FAULT_SENSOR_IFACE) {
+            emergency_duty(&target_state, &target_relay, sdt);
+        } else {
+            target_state = ST_FAULT;
+            target_relay = false;
+        }
     }
     /* Precedence 5: normal hysteresis. */
     else {
@@ -308,7 +327,8 @@ void control_tick(int dt_ms)
         static bool s_restart_notified = false;
         if (!s_restart_notified && control_now_ms() / 1000 >= 60) {
             s_restart_notified = true;
-            if (s_cfg->notify.email_enabled || s_cfg->notify.sms_enabled) {
+            if ((s_cfg->notify.email_enabled || s_cfg->notify.sms_enabled) &&
+                s_cfg->notify_ev_restart) {
                 notification_dispatch_restart(&s_cfg->notify,
                     s_cfg->device_name, sys_temp, ext_temp,
                     healthy, total, s_cfg->sensors, s_cfg->sensor_count,

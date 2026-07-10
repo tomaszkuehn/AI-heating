@@ -49,6 +49,14 @@ typedef struct {
     int                 fault_grace_sec;             /* NO_HEAT_RISE grace (default 300 = 5 min) */
     int                 max_on_sec;                  /* max continuous heating (default 14400 = 4 h) */
     int                 max_on_break_sec;           /* forced break after max-on (default 600 = 10 min) */
+    /* ---- Features appended at the TAIL for NVS upgrade safety: a short-read blob
+     * from older firmware zero-fills these, and repair_config() defaults them. Do
+     * NOT reorder or insert fields above this line (would shift the NVS layout and
+     * silently corrupt every upgraded device). ---- */
+    bool                emergency_on_sensor_fault;  /* opt-in: emergency duty cycle while FAULT_SENSOR_IFACE active */
+    uint8_t             notify_ev_ver;              /* 0 = unconfigured (upgrade/first boot) -> repair_config sets defaults */
+    bool                notify_ev_faults;           /* e-mail on fault raised (default true)  */
+    bool                notify_ev_restart;          /* e-mail on restart (~60 s boot)(default true)  */
 } system_config_t;
 
 /* One minute sample record (all active sensors + system + external). */
