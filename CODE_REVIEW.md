@@ -342,3 +342,35 @@ Wszystkie 15 findingów naprawione + cleanup z Part C. Szczegóły w commit i w 
 **Cleanup (Part C):** `qname()` hoistowane do `data_model` jako `sensor_quality_name()` (likwidacja triplicacji switch QUAL_* w `web_ui_api.c` i `notification_manager.c`); `HE_DEFAULT_DEVICE_NAME` scentralizowane (zamiast literału `"Sterownik CO"` w `main.c`/`web_ui_api.c`); `s_diag` reset unconditional w `notification_send_restart` (zgodnie z `notification_send_alert`).
 
 **Regression (naprawiony przy weryfikacji):** worker `notify` stack 5120 → **10240**. Worker wykonuje `smtp_send`/`sms_send` off-loop z `notify_cmd_t` (~1,2 KB) na stosie; 5120 przepełniało się przy pełnym SMTP (e-mail restartu przy ~60 s → stack overflow → `SW_CPU_RESET` → reboot-loop co ~66 s). 10240 = httpd (8192) + zapas na cmd. Komentarz w `notification_init` dokumentuje sizing.
+
+---
+
+## Addendum — diagnostyka żywego modułu 10.168.34.11 (2026-07-10)
+
+Osobny pass diagnostyczny (nieczęść 15-findingowej recenzji feature'a wyżej):
+na prośbę użytkownika przejęto ster, przetestowano żywy moduł (`device_name`
+„Sterownik Grota", tryb SYMULATION, SSID NCC-1701), znaleziono 5 usterek
+widocznych w UI/API i wgrano poprawki (build + flash COM3 bez erase, weryfikacja
+na żywym module). App 0xf79b0 (3% free).
+
+| # | Usterka | Objaw na żywym module | Resolution |
+|---|---|---|---|
+| F1 | `daily.csv` zanieczyszczony datkami z wirtualnego zegara | `/api/daily` zawierał powielone wiersze „20231114" + rósł bez limitu (wirtualny zegar zasiewany na `HE_TIME_VALID_EPOCH`=2023-11-14 zanim SNTP złapie; `aggregate_day` dopisywał bez dedup) | `storage_record_minute` agreguje dany dzień **tylko gdy `he_time_valid()`** (flaga `s_cur_day_real`); `dedup_daily_csv()` przy starcie czyści istniejący plik (ostatni wiersz na dzień, sort rosnąco) |
+| F2 | zalewanie `events.log` przy oscylacji awarii | `NO_HEAT_RISE` ↔ `SENSOR_IFACE` logował każdy przełącz | `raise_fault` limituje: ten sam `fault_class_t` → log co ≤1 raz / 60 s (`s_last_log_fault`/`s_last_log_us`) |
+| F3 | brak możliwości wyczyszczenia logu | „Logi/alarmy" bez przycisku | `POST /api/log/clear` → `storage_clear_log()` (usuwa `events.log`); przycisk „Wyczyść log" w `index.html` (`btnLogClear`, confirm) |
+| F4 | wyłączony czujnik z zaciśniętym `window_open=true` | Salon (`active:false`) pokazywał ⚫ z oknem — stany nie spójne z DISABLED | `sensor_manager_poll` czyści `s->window_open=false` przy `!active` (samonaprawa w 1 s) |
+| F5 | wpisy logu przed SNTP z 1970 | pierwszy wpis po restarcie pokazywał datę 1970 (`time(NULL)` = uptime przed SNTP) | `loadLog()` w `app.js`: `ts < 1700000000` → `boot +Ns` (sekundy od startu) |
+
+**Build gotcha (przyrostowy):** kompresja gzip zasobów WWW w `main/CMakeLists.txt`
+musi mieć flagę `-f` (`gzip -9 -n -f`). Bez niej przyrostowa edycja pliku WWW →
+ninja regeneruje `.gz`, który już istnieje → `X.gz already exists; not
+overwritten` → build fail. Utajniony błąd (piera pełna kompilacja po gzip-slim
+działała, bo `.gz` nie istniał); ujawnił się przy edycji `index.html`/`app.js`
+w tym passie. Komentarz w `CMakeLists.txt:71-75` dokumentuje przyczynę.
+
+**Weryfikacja na żywym module (po flashu):** `/api/daily` = 4 posortowane,
+zdeduplikowane wiersze (F1); `POST /api/log/clear` → `ok`, `/api/log` → `[]`
+(F3); Salon `window:false` (F4); uptime narasta 190028→197687 ms bez rebootu,
+`fault=NONE`, `time_synced=true` (F2/F5). `daily.csv deduped (N -> N rows)` w
+logu pierwszego startu (drugi start: plik czysty → brak przepisania → brak
+komunikatu, zgodnie z oczekiwaniem).

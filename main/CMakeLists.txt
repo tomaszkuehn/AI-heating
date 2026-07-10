@@ -68,12 +68,15 @@ if(NOT CMAKE_BUILD_EARLY_EXPANSION)
         if(GZIP_TOOL)
             # Copy the source into the build dir, then gzip it in place (no shell
             # redirect). -n strips the mtime so the output is reproducible across
-            # builds. Editing a web file -> regenerates its .gz -> re-embeds only
-            # that file (no fullclean), via the OUTPUT->EMBED_FILES dependency chain.
+            # builds. -f forces overwrite of an existing .gz from a prior build, so
+            # editing a web file -> regenerates its .gz -> re-embeds only that file
+            # (no fullclean), via the OUTPUT->EMBED_FILES dependency chain. Without
+            # -f, an incremental web edit fails with "X.gz already exists; not
+            # overwritten" because the stale .gz is still on disk.
             add_custom_command(
                 OUTPUT ${_gz}
                 COMMAND ${CMAKE_COMMAND} -E copy ${_src} ${CMAKE_CURRENT_BINARY_DIR}/${_name}
-                COMMAND ${GZIP_TOOL} -9 -n ${_name}
+                COMMAND ${GZIP_TOOL} -9 -n -f ${_name}
                 WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
                 DEPENDS ${_src}
                 VERBATIM

@@ -717,6 +717,13 @@ static esp_err_t h_log(httpd_req_t *req)
     return httpd_resp_send_chunk(req, NULL, 0);
 }
 
+/* ---- /api/log/clear (POST) ---- */
+static esp_err_t h_log_clear(httpd_req_t *req)
+{
+    storage_clear_log();
+    return send_text(req, "ok", 200);
+}
+
 /* ---- /api/diagnostics ---- */
 static esp_err_t h_diag(httpd_req_t *req)
 {
@@ -768,6 +775,7 @@ static httpd_uri_t regs[] = {
     { .uri = "/api/samples", .method = HTTP_GET,  .handler = h_samples,      .user_ctx = NULL },
     { .uri = "/api/daily",   .method = HTTP_GET,  .handler = h_daily,        .user_ctx = NULL },
     { .uri = "/api/log",     .method = HTTP_GET,  .handler = h_log,          .user_ctx = NULL },
+    { .uri = "/api/log/clear", .method = HTTP_POST, .handler = h_log_clear,  .user_ctx = NULL },
     { .uri = "/api/diagnostics", .method = HTTP_GET, .handler = h_diag,      .user_ctx = NULL },
 };
 

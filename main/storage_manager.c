@@ -41,6 +41,9 @@ static minute_sample_t s_ring[HE_RING_SIZE];
 static int s_ring_head = 0;     /* next write index */
 static int s_ring_count = 0;    /* total stored (0..HE_RING_SIZE, saturates) */
 static int s_cur_day = -1;
+static bool s_cur_day_real = false;   /* was s_cur_day recorded against a real
+                                      * (SNTP-synced) wall clock? Fake-epoch days
+                                      * are never aggregated to daily.csv. */
 
 /* ---- Flash-wear counters (persisted in NVS, live in RAM) ---- */
 static uint32_t s_nvs_writes = 0;
@@ -49,6 +52,7 @@ static uint32_t s_fs_kb = 0;
 /* Forward declarations. */
 static void aggregate_day(int key);
 static void prune_old_samples(int keep_key);
+static void dedup_daily_csv(void);
 static int  day_key_from_ts(int32_t ts);
 void storage_flush_samples(void);
 
@@ -119,6 +123,11 @@ esp_err_t storage_init(void)
     load_wear_counters();
     ESP_LOGI(TAG, "Wear counters: NVS=%lu commits, FS=%lu KB",
              (unsigned long)s_nvs_writes, (unsigned long)s_fs_kb);
+    /* Collapse any duplicate / out-of-order rows that older firmware wrote to
+     * daily.csv while the clock was on the synthetic fallback epoch (synthetic
+     * 20231114 days, re-aggregated each boot -> many dupes). Idempotent: leaves a
+     * clean file untouched, only rewriting when there is something to fix. */
+    if (s_lfs_ok) dedup_daily_csv();
     return ESP_OK;
 }
 
@@ -233,14 +242,25 @@ void storage_record_minute(const minute_sample_t *s)
 {
     if (!s) return;
     int day = day_key_from_ts(s->ts);
-    if (s_cur_day == -1) s_cur_day = day;
+    bool real = he_time_valid();   /* SNTP-synced => a real wall-clock day */
 
-    if (day != s_cur_day) {
-        /* Day rollover: compute the old day's aggregate from the ring buffer,
-         * then prune any leftover sample files still on flash. */
-        aggregate_day(s_cur_day);
-        prune_old_samples(day_key_from_ts(s->ts - HE_SAMPLE_RETAIN_DAYS * 86400));
+    if (s_cur_day == -1) {
         s_cur_day = day;
+        s_cur_day_real = real;
+    } else if (day != s_cur_day) {
+        /* Day rollover: persist the OLD day's aggregate only if it was recorded
+         * against a real (SNTP-synced) wall clock. When the clock ran on the
+         * synthetic fallback epoch (offline / accelerated sim), the day key is a
+         * fake 20231114 that resets every boot -- aggregating it would pollute
+         * daily.csv with duplicate, out-of-order rows (the bug that previously
+         * filled the energy chart with 2023 garbage). The RAM ring still holds
+         * those samples for the 24h chart; only the long-term daily log is skipped. */
+        if (s_cur_day_real) {
+            aggregate_day(s_cur_day);
+            prune_old_samples(day_key_from_ts(s->ts - HE_SAMPLE_RETAIN_DAYS * 86400));
+        }
+        s_cur_day = day;
+        s_cur_day_real = real;
     }
 
     xSemaphoreTake(s_fs_mutex, portMAX_DELAY);
@@ -326,6 +346,67 @@ esp_err_t storage_get_flash_wear(storage_flash_wear_t *w)
                           / (float)FLASH_RATED_CYCLES * 100.0f;
 
     return ESP_OK;
+}
+
+/* Collapse daily.csv to one row per day key, sorted ascending. Removes the
+ * duplicate and out-of-order rows that older firmware wrote while the clock ran
+ * on the synthetic fallback epoch: the fake 20231114 day was re-aggregated every
+ * boot, so the file accumulated many copies and the energy chart showed 2023
+ * garbage. Idempotent: a file that is already one-row-per-day and ascending is
+ * left untouched (no needless flash write on a clean boot). Called once at init;
+ * bounded -- one row/day, a decade is ~3.6 KB of rows (cap 400, matches the web
+ * layer's s_daily[400] history buffer). */
+static void dedup_daily_csv(void)
+{
+    xSemaphoreTake(s_fs_mutex, portMAX_DELAY);
+    FILE *f = fopen(FS_DAILY, "r");
+    if (!f) { xSemaphoreGive(s_fs_mutex); return; }
+
+    /* Parse every row, keeping the LAST aggregate for each day key (last wins). */
+    static int   keys[400];
+    static float syss[400], exts[400];
+    static int   heats[400];
+    int n = 0, total = 0;
+    char line[128];
+    while (fgets(line, sizeof(line), f)) {
+        int key, heat = 0; float sys, ext;
+        if (sscanf(line, "%d,%f,%f,%d", &key, &sys, &ext, &heat) < 3) continue;
+        total++;
+        int found = -1;
+        for (int i = 0; i < n; i++) if (keys[i] == key) { found = i; break; }
+        if (found >= 0) { syss[found] = sys; exts[found] = ext; heats[found] = heat; }
+        else if (n < 400) { keys[n] = key; syss[n] = sys; exts[n] = ext; heats[n] = heat; n++; }
+    }
+    fclose(f);
+
+    /* Only rewrite if there is something to fix: duplicates removed OR rows out of
+     * ascending order. A clean file is left untouched to avoid a flash write every boot. */
+    bool unsorted = false;
+    for (int i = 1; i < n; i++) if (keys[i] < keys[i - 1]) { unsorted = true; break; }
+    if (n == total && !unsorted) { xSemaphoreGive(s_fs_mutex); return; }
+
+    /* Insertion sort by day key ascending (n is tiny -- one row/day). */
+    for (int i = 1; i < n; i++) {
+        int k = keys[i]; float sv = syss[i], ev = exts[i]; int hv = heats[i]; int j = i - 1;
+        while (j >= 0 && keys[j] > k) {
+            keys[j + 1] = keys[j]; syss[j + 1] = syss[j]; exts[j + 1] = exts[j]; heats[j + 1] = heats[j]; j--;
+        }
+        keys[j + 1] = k; syss[j + 1] = sv; exts[j + 1] = ev; heats[j + 1] = hv;
+    }
+
+    FILE *w = fopen(FS_DAILY, "w");
+    if (!w) { xSemaphoreGive(s_fs_mutex); return; }
+    size_t wr = 0;
+    for (int i = 0; i < n; i++) {
+        char buf[64];
+        int L = snprintf(buf, sizeof(buf), "%d,%.2f,%.2f,%d\n",
+                         keys[i], syss[i], exts[i], heats[i]);
+        if (L > 0) wr += fwrite(buf, 1, (size_t)L, w);
+    }
+    fclose(w);
+    if (wr > 0) account_fs_write(wr);
+    xSemaphoreGive(s_fs_mutex);
+    ESP_LOGI(TAG, "daily.csv deduped (%d -> %d rows)", total, n);
 }
 
 /* Compute one daily aggregate from ring-buffer samples for a given day key,
@@ -504,5 +585,18 @@ esp_err_t storage_read_log(log_entry_t *out, int max, int *count)
     }
     fclose(f);
     xSemaphoreGive(s_fs_mutex);
+    return ESP_OK;
+}
+
+/* Empty the event/alarm log (deletes events.log). Used by the "Wyczyść" UI button so
+ * accumulated test/stale entries can be wiped without a reflash. The next
+ * storage_log_event recreates the file. */
+esp_err_t storage_clear_log(void)
+{
+    if (!s_lfs_ok) return ESP_FAIL;
+    xSemaphoreTake(s_fs_mutex, portMAX_DELAY);
+    remove(FS_LOG_F);
+    xSemaphoreGive(s_fs_mutex);
+    ESP_LOGI(TAG, "events.log cleared");
     return ESP_OK;
 }

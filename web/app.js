@@ -317,7 +317,14 @@ async function loadDiag() {
 
 async function loadLog() {
   const l = await api('/api/log');
-  if (l) $('log').textContent = l.map(e => `[${new Date(e[0]*1000).toLocaleString()}] ${e[1]}/${e[2]} ${e[3]}`).join('\n');
+  if (l) $('log').textContent = l.map(e => {
+    /* Entries logged before SNTP synced carry an uptime-seconds timestamp (time()
+     * returns uptime then, not a unix time). Render those as "boot +Ns" instead of
+     * a meaningless 1970 date; everything at/above the validity epoch is real time. */
+    const ts = e[0];
+    const when = ts < 1700000000 ? ('boot +' + ts + 's') : new Date(ts * 1000).toLocaleString();
+    return `[${when}] ${e[1]}/${e[2]} ${e[3]}`;
+  }).join('\n');
 }
 
 /* ---- charts ---- */
@@ -656,6 +663,11 @@ $('killNo').onclick = () => {
   $('btnKill').style.opacity = '';
 };
 $('btnFault').onclick = () => post('/api/fault/clear', '').then(() => refresh());
+$('btnLogClear').onclick = () => {
+  if (confirm('Wyczyścić log zdarzeń? Tej operacji nie można cofnąć.')) {
+    post('/api/log/clear', '').then(() => loadLog());
+  }
+};
 $('btnPump').onclick = () => post('/api/pump', { enabled: $('pumpEn').checked, impulse: +$('pumpImpulse').value, period: +$('pumpPeriod').value, total: +$('pumpTotal').value }, true).then(() => refresh());
 $('btnEm').onclick = () => post('/api/emergency', { enabled: $('emEn').checked, on: +$('emOn').value, period: +$('emPeriod').value }, true).then(() => refresh());
 $('btnNet').onclick = () => post('/api/network', { sta_mode: $('netSta').checked, ssid: $('netSsid').value, pass: $('netPass').value }, true).then(() => refresh());

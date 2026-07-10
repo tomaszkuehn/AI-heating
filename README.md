@@ -79,11 +79,25 @@ plików**. Mechanizmy (w `storage_manager.c`):
 2. **Agregacja dobowa + kasowanie surowych danych.** Przy zmianie dnia próbki
    z bufora RAM są redukowane do jednego wiersza (~20 B) w `daily.csv`
    (`aggregate_day()`), a ewentualne stare pliki `YYYYMMDD.csv` z poprzednich
-   wersji firmware są usuwane (`prune_old_samples()`).
+   wersji firmware są usuwane (`prune_old_samples()`). Agregacja odbywa się
+   **tylko gdy zegar jest zsynchronizowany SNTP** (`he_time_valid()` — flaga
+   `s_cur_day_real`): zanim urządzenie pobierze czas z sieci, wirtualny zegar
+   jest zasiewany na epokę `HE_TIME_VALID_EPOCH` (2023-11-14), więc próbki
+   z tego czasu **nie są agregowane** (nie powstają sztuczne wiersze „20231114").
+   Dodatkowo przy starcie `dedup_daily_csv()` czyści ewentualne powielone /
+   nieposortowane wiersze z poprzednich uruchomień (zachowuje **ostatni** wiersz
+   na każdy dzień, sortuje rosnąco) — `daily.csv` jest zawsze krótki i
+   posortowany.
 3. **Kompaktowanie logu zdarzeń.** `events.log` ma twardy limit
    `HE_LOG_MAX_BYTES = 16 KB`; po przekroczeniu zachowywana jest tylko nowsza
    połowa, wyrównana do pełnych wierszy (zapis do `.tmp` + `rename`,
-   `compact_log_tail()`).
+   `compact_log_tail()`). Ponadto `raise_fault()` **limituje częstotliwość**
+   zapisu: ten sam typ awarii (`fault_class_t`) trafia do logu co **najwyżej
+   raz na 60 s** (`s_last_log_fault` / `s_last_log_us`), więc oscylacje awarii
+   (np. `NO_HEAT_RISE` ↔ `SENSOR_IFACE`) nie zalewają logu tysiącami wpisów
+   między kompakcjami. Log można też **wyczyścić ręcznie** przyciskiem „Wyczyść
+   log" w sekcji „Logi / alarmy" (`POST /api/log/clear` → `storage_clear_log()`)
+   — usuwa cały plik `events.log` (operacji nie da się cofnąć).
 4. **Konfiguracja w NVS zapisywana tylko przy zmianie.** `storage_save_config()`
    jest wołane przy faktycznej edycji z UI/API, nie cyklicznie; NVS ma własny
    wear-leveling.
@@ -106,10 +120,12 @@ pokazuje użycie KB i procent zużycia (żółty od 0,5%, czerwony od 1%).
 
 Jednostronicowa aplikacja (bez zależności) serwowana z firmware. Zasoby WWW
 (`index.html`, `style.css`, `app.js`) są **kompresowane gzip w trakcie
-budowania** (`main/CMakeLists.txt`, `gzip -9 -n`) i serwowane z nagłówkiem
+budowania** (`main/CMakeLists.txt`, `gzip -9 -n -f`) i serwowane z nagłówkiem
 `Content-Encoding: gzip` — przeglądarka dekompresuje je transparentnie. To
 odchudza firmware o ~35 KB (z ~816 B do ~36 KB wolnego w partycji 1 MB) bez utraty
-funkcji. Możliwe sekcje:
+funkcji. Flaga `-f` nadpisuje istniejący `.gz` z poprzedniej kompilacji — bez niej
+przyrostowa edycja pliku WWW kończy się błędem `X.gz already exists; not
+overwritten` (patrz komentarz w `main/CMakeLists.txt`). Możliwe sekcje:
 
 - **Wykres temperatur 24 h** — oś X w czasie rzeczywistym (okno kotwiczone do
   najnowszej próbki, więc przewija się w lewo w miarę napływu danych), ze skalą
@@ -221,6 +237,14 @@ oraz **akcje i rezultat** w działaniu systemu. Wszystkie awarie i przejścia
 stanów trafiają do trwałego dziennika `events.log` (widoczny w UI: „Logi /
 alarmy"), a awarie dodatkowo wyzwalają powiadomienia (patrz niżej).
 
+Wpisy sprzed synchronizacji SNTP — gdy `time(NULL)` zwraca jeszcze czas
+uruchomienia, a nie czas rzeczywisty — są wyświetlane jako **`boot +Ns`**
+(liczba sekund od startu), a nie jako data z 1970 r.; dzięki temu pierwszy
+wpis po restarcie (np. `FAULT_RESTART`) ma czytelny timestamp. Sekcja „Logi /
+alarmy" ma przycisk **„Wyczyść log"** (`POST /api/log/clear` →
+`storage_clear_log()`), który usuwa cały `events.log` — operacji nie da się
+cofnąć.
+
 ### A. Zdarzenia jakości i awarii czujników (`sensor_manager.c`)
 
 Każdy czujnik ma status `sensor_quality_t`, wyznaczany w każdym cyklu odpytania
@@ -278,10 +302,13 @@ uwzględnia wyłącznie czujniki o statusie `OK` lub `SIMULATED`.
   `/api/sensor`). Dotyczy zarówno czujników wewnętrznych, jak i **zewnętrznego**.
 - **Zakończenie:** ponowne włączenie czujnika w UI.
 - **Akcje i rezultat:** czujnik **nie jest odpytywany ani symulowany** i nie
-  wpływa na nic. Dla czujnika zewnętrznego oznacza to, że `sensor_manager_external_temp()`
-  zwraca NaN — na pulpicie „Temp. zewn." pokazuje `--`, a model kompensacji
-  cieplnej / symulacji używa wartości zastępczej (5 °C), a nie „ducha"
-  wyłączonego czujnika.
+  wpływa na nic. Wyłączenie **samoczynnie czyści flagę `window_open`**
+  (`s->window_open = false` w `sensor_manager_poll`), więc po ponownym
+  włączeniu czujnik nie dziedziczy przestarzałego stanu „otwarte okno" sprzed
+  wyłączenia. Dla czujnika zewnętrznego oznacza to, że
+  `sensor_manager_external_temp()` zwraca NaN — na pulpicie „Temp. zewn."
+  pokazuje `--`, a model kompensacji cieplnej / symulacji używa wartości
+  zastępczej (5 °C), a nie „ducha" wyłączonego czujnika.
 
 #### `QUAL_SIMULATED` — odczyt ze źródła symulacji
 - **Warunek:** czujnik ma ustawione źródło symulacji (≠ `SIM_SRC_REAL`) i jest
@@ -294,8 +321,12 @@ uwzględnia wyłącznie czujniki o statusie `OK` lub `SIMULATED`.
 
 Awaria jest podnoszona przez `raise_fault()`: ustawia stan awarii, **loguje**
 zdarzenie (severity 2) i **jednokrotnie** wysyła powiadomienie (flaga
-`s_notified` blokuje spam do czasu skasowania). Tylko jedna awaria jest aktywna
-naraz (o najwyższym priorytecie wykrycia).
+`s_notified` blokuje spam do czasu skasowania). Logowanie jest dodatkowo
+**limitowane czasowo**: ten sam typ awarii (`fault_class_t`) trafia do
+`events.log` co najwyżej raz na 60 s (`s_last_log_fault` / `s_last_log_us`),
+więc szybkie oscylacje (np. `NO_HEAT_RISE` ↔ `SENSOR_IFACE`) nie zalewają logu
+tysiącami wpisów. Tylko jedna awaria jest aktywna naraz (o najwyższym
+priorytecie wykrycia).
 
 #### `FAULT_SENSOR_IFACE` — wszystkie czujniki niedostępne
 - **Warunek:** `total_sensors > 0` i `healthy_sensors == 0` — żaden czujnik nie

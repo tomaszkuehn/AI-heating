@@ -17,6 +17,14 @@ static char s_text[96] = "";
 static bool s_net_up = true;
 static bool s_notified = false;
 
+/* Rate-limit the on-disk log: a flapping fault (raise/clear/re-raise, e.g.
+ * NO_HEAT_RISE <-> SENSOR_IFACE while sensors wobble available/unavailable) would
+ * otherwise fill events.log with repeated entries seconds apart. The fault state
+ * and the one-shot notification still update immediately; only the persistent log
+ * write is throttled to at most one entry per fault class per minute. */
+static int64_t s_last_log_us = 0;
+static fault_class_t s_last_log_fault = FAULT_NONE;
+
 /* Expected thermal response model (spec 7: not a naive "temp not rising"). */
 static float s_heat_start_temp;
 static int64_t s_heat_start_us;
@@ -54,7 +62,15 @@ static void raise_fault(fault_class_t f, const char *text)
     strncpy(s_text, text, sizeof(s_text) - 1);
     s_text[sizeof(s_text) - 1] = '\0';
     ESP_LOGW(TAG, "fault raised: %d (%s)", (int)f, text);
-    storage_log_event(f, 2, text);
+    /* Throttle the persistent log to <=1/min per fault class. The fault state
+     * above and the notification below still fire immediately; this only stops a
+     * rapidly flapping fault from spamming events.log. */
+    int64_t now_us = esp_timer_get_time();
+    if (!(s_last_log_fault == f && now_us - s_last_log_us < 60 * 1000000LL)) {
+        storage_log_event(f, 2, text);
+        s_last_log_fault = f;
+        s_last_log_us = now_us;
+    }
     if (s_cfg && !s_notified) {
         notification_dispatch_alert(&s_cfg->notify, f, text);
         s_notified = true;

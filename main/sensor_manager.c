@@ -268,7 +268,14 @@ void sensor_manager_poll(void)
     /* Validation passes for real sensors that received data this poll. */
     for (int i = 0; i < s_count; i++) {
         sensor_t *s = &s_sensors[i];
-        if (!s->active) { s->quality = QUAL_DISABLED; continue; }
+        if (!s->active) {
+            s->quality = QUAL_DISABLED;
+            /* A disabled sensor can't be in window-open state; clear any stale flag
+             * left from when it was active so the UI never shows the ⊗ mark for a
+             * sensor that is no longer being polled. */
+            s->window_open = false;
+            continue;
+        }
         if (s->simulated) { continue; }
         if (s->quality == QUAL_OK) {
             if ((mono_ms() - s->last_update_ms) > HE_SENSOR_TIMEOUT_SEC * 1000)
