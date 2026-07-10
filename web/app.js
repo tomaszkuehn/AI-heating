@@ -301,10 +301,26 @@ function renderModes(s) {
     if ($('limGrace')) $('limGrace').value = s.fault_grace_sec || 300;
     if ($('limMaxOn')) $('limMaxOn').value = s.max_on_sec || 14400;
     if ($('limBreak')) $('limBreak').value = s.max_on_break_sec || 600;
-    /* per-event-type e-mail subscription (safe booleans; the SMTP/SMS fields above
-     * stay write-only on purpose — never echo secrets back to the browser). */
+    /* per-event-type e-mail subscription (safe booleans). */
     if ($('nEvFaults'))  $('nEvFaults').checked  = s.notify_ev.faults;
     if ($('nEvRestart')) $('nEvRestart').checked = s.notify_ev.restart;
+    /* Network + notification settings echo. Secrets (wifi_pass, smtp_pass) are
+     * intentionally NOT populated — those inputs stay empty, and an empty value
+     * on save means "keep current" server-side (so a refresh never clobbers a
+     * freshly-typed password either). */
+    if (s.wifi) {
+      if ($('netSta'))  $('netSta').checked  = !!s.wifi.sta_mode;
+      if ($('netSsid')) $('netSsid').value   = s.wifi.ssid || '';
+    }
+    if (s.notify) {
+      if ($('nEmail'))    $('nEmail').checked    = !!s.notify.email_enabled;
+      if ($('nSms'))      $('nSms').checked      = !!s.notify.sms_enabled;
+      if ($('nEmailTo'))  $('nEmailTo').value    = s.notify.email_to || '';
+      if ($('nSmtpHost')) $('nSmtpHost').value   = s.notify.smtp_host || '';
+      if ($('nSmtpUser')) $('nSmtpUser').value   = s.notify.smtp_user || '';
+      if ($('nSmsPhone')) $('nSmsPhone').value   = s.notify.sms_phone || '';
+      if ($('nSmsGw'))    $('nSmsGw').value      = s.notify.sms_gateway || '';
+    }
   }
 }
 

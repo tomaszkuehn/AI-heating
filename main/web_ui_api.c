@@ -302,7 +302,7 @@ static esp_err_t h_state(httpd_req_t *req)
         "\"profile\":%s,\"pump\":{\"enabled\":%s,\"impulse\":%d,\"period\":%d,\"total\":%d},"
         "\"emergency\":{\"enabled\":%s,\"on\":%d,\"period\":%d,\"on_fault\":%s},"
         "\"sim_sensors\":%s,\"sim_heating\":%s,\"sim_accel\":%s,\"device_name\":\"%s\","
-        "\"notify_ev\":{\"faults\":%s,\"restart\":%s}}",
+        "\"notify_ev\":{\"faults\":%s,\"restart\":%s}",
         prof,
         s_cfg->pump.enabled ? "true" : "false", s_cfg->pump.impulse_seconds,
         s_cfg->pump.period_seconds, s_cfg->pump.total_seconds,
@@ -315,6 +315,31 @@ static esp_err_t h_state(httpd_req_t *req)
         edname,
         s_cfg->notify_ev_faults ? "true" : "false",
         s_cfg->notify_ev_restart ? "true" : "false");
+    /* Echo the current network + notification settings so the UI can show them
+     * (SSID/mode in the Sieć card, recipients/servers in Powiadomienia). Secrets
+     * (wifi_pass, smtp_pass) are deliberately NOT emitted — the UI leaves those
+     * fields empty and the save handlers treat an empty password as "keep
+     * current". One shared escape buffer (largest field is 64 -> 64*6+1) keeps
+     * the stack footprint small; httpd stack is 8192. */
+    char ebuf[64 * 6 + 1];
+    p += snprintf(b + p, sizeof(b) - p,
+        ",\"wifi\":{\"sta_mode\":%s,\"ssid\":\"",
+        s_cfg->wifi_sta_mode ? "true" : "false");
+    json_escape(s_cfg->wifi_ssid, ebuf, sizeof(ebuf));
+    p += snprintf(b + p, sizeof(b) - p, "%s\"},\"notify\":{\"email_enabled\":%s,"
+        "\"sms_enabled\":%s,\"email_to\":\"", ebuf,
+        s_cfg->notify.email_enabled ? "true" : "false",
+        s_cfg->notify.sms_enabled ? "true" : "false");
+    json_escape(s_cfg->notify.email_to, ebuf, sizeof(ebuf));
+    p += snprintf(b + p, sizeof(b) - p, "%s\",\"smtp_host\":\"", ebuf);
+    json_escape(s_cfg->notify.smtp_host, ebuf, sizeof(ebuf));
+    p += snprintf(b + p, sizeof(b) - p, "%s\",\"smtp_user\":\"", ebuf);
+    json_escape(s_cfg->notify.smtp_user, ebuf, sizeof(ebuf));
+    p += snprintf(b + p, sizeof(b) - p, "%s\",\"sms_phone\":\"", ebuf);
+    json_escape(s_cfg->notify.sms_phone, ebuf, sizeof(ebuf));
+    p += snprintf(b + p, sizeof(b) - p, "%s\",\"sms_gateway\":\"", ebuf);
+    json_escape(s_cfg->notify.sms_gateway, ebuf, sizeof(ebuf));
+    p += snprintf(b + p, sizeof(b) - p, "%s\"}}", ebuf);
     CFG_RET(send_json(req, b));
 }
 
@@ -519,14 +544,19 @@ static esp_err_t h_notify_events(httpd_req_t *req)
 static esp_err_t h_notify(httpd_req_t *req)
 {
     char body[512]; read_body(req, body, sizeof(body));
-    bool en;
+    bool en; char tmp[32];
     CFG_LOCK();
     if (json_bool(body, "email_enabled", &en)) s_cfg->notify.email_enabled = en;
     if (json_bool(body, "sms_enabled", &en)) s_cfg->notify.sms_enabled = en;
     json_str(body, "email_to", s_cfg->notify.email_to, sizeof(s_cfg->notify.email_to));
     json_str(body, "smtp_host", s_cfg->notify.smtp_host, sizeof(s_cfg->notify.smtp_host));
     json_str(body, "smtp_user", s_cfg->notify.smtp_user, sizeof(s_cfg->notify.smtp_user));
-    json_str(body, "smtp_pass", s_cfg->notify.smtp_pass, sizeof(s_cfg->notify.smtp_pass));
+    /* The UI does not echo the SMTP password, so an empty value here means
+     * "keep the stored password" — only overwrite when a new one is typed. */
+    if (json_str(body, "smtp_pass", tmp, sizeof(tmp)) && tmp[0]) {
+        strncpy(s_cfg->notify.smtp_pass, tmp, sizeof(s_cfg->notify.smtp_pass) - 1);
+        s_cfg->notify.smtp_pass[sizeof(s_cfg->notify.smtp_pass) - 1] = '\0';
+    }
     json_str(body, "sms_phone", s_cfg->notify.sms_phone, sizeof(s_cfg->notify.sms_phone));
     json_str(body, "sms_gateway", s_cfg->notify.sms_gateway, sizeof(s_cfg->notify.sms_gateway));
     storage_save_config(s_cfg);
@@ -558,10 +588,21 @@ static esp_err_t h_network(httpd_req_t *req)
 {
     char body[512]; read_body(req, body, sizeof(body));
     bool sta;
+    char tmp[64];
     CFG_LOCK();
     if (json_bool(body, "sta_mode", &sta)) s_cfg->wifi_sta_mode = sta;
-    json_str(body, "ssid", s_cfg->wifi_ssid, sizeof(s_cfg->wifi_ssid));
-    json_str(body, "pass", s_cfg->wifi_pass, sizeof(s_cfg->wifi_pass));
+    /* Treat an empty ssid/pass as "leave unchanged": the UI now echoes the
+     * current SSID (not the password), so an empty pass on save must NOT blank
+     * the stored credential. Only overwrite when the client sends a non-empty
+     * value (i.e. the user typed a new one). */
+    if (json_str(body, "ssid", tmp, sizeof(tmp)) && tmp[0]) {
+        strncpy(s_cfg->wifi_ssid, tmp, sizeof(s_cfg->wifi_ssid) - 1);
+        s_cfg->wifi_ssid[sizeof(s_cfg->wifi_ssid) - 1] = '\0';
+    }
+    if (json_str(body, "pass", tmp, sizeof(tmp)) && tmp[0]) {
+        strncpy(s_cfg->wifi_pass, tmp, sizeof(s_cfg->wifi_pass) - 1);
+        s_cfg->wifi_pass[sizeof(s_cfg->wifi_pass) - 1] = '\0';
+    }
     storage_save_config(s_cfg);
     network_apply(s_cfg);
     CFG_RET(send_text(req, "ok", 200));

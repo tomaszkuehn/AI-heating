@@ -448,3 +448,47 @@ użytkownika).
   starcie `/api/state` `notify_ev.faults=true,restart=true` (sentinel zadziałał —
   brak regresji), `emergency.on_fault=false` (default opt-in), `device_name=
   "Sterownik Grota"` + NVS zachowane. Uptime narasta po flashu bez rebootu.
+
+---
+
+## Addendum — echo ustawień Sieć/Powiadomienia w UI + ochrona haseł (2026-07-10)
+
+Zamknięcie pre-existing gapu „pól notify write-only" (odnotowanego wyżej jako
+poza zakresem) + analogiczne echo dla sieci. Dwie karty UI pokazują teraz
+bieżące ustawienia; sekrety nigdy nie wychodzą do przeglądarki, a puste hasło
+przy zapisie znaczy „zachowaj bieżące".
+
+- **`/api/state` emituje bloki `wifi` i `notify`** (`web_ui_api.c` `h_state`):
+  `wifi:{sta_mode,ssid}`, `notify:{email_enabled,sms_enabled,email_to,smtp_host,
+  smtp_user,sms_phone,sms_gateway}`. **Bez** `wifi_pass` i `smtp_pass` (sekrety).
+  Jeden współdzielony bufor escape `ebuf[64*6+1]` (największe pole 64 →
+  64*6+1=385 B), wielokrotny `snprintf` do `b` — stack httpd 8192, narost ~385 B
+  ponad istniejące `b[3200]+edname[193]+prof[600]` (~4,4 KB, bezpieczny margines).
+  `json_escape` bounded (`o+6<outlen`), więc 63-znakowe pole fully-escaped (378 B)
+  mieści się w 385 B.
+- **Ochrona haseł przy zapisie (footgun wyzerowania):** `h_network` i `h_notify`
+  zapisują `wifi_pass`/`smtp_pass` (oraz `wifi_ssid`) **tylko gdy wartość
+  niepusta** (`if (json_str(...) && tmp[0])`). Bez tego — skoro haseł nie echo'ujemy
+  (pole puste po renderze) — zapis po wyedytowaniu innego pola wyzerowałby
+  zapisane hasło. Puste = „zachowaj bieżące"; nadpisanie tylko przy niepustej
+  wartości (użytkownik wpisuje nowe). To naprawia też pre-existing footgun
+  `btnNotifyTest` (zapisywał podzbiór z pustym `smtp_pass` → blank → test bez
+  auth): teraz `smtp_pass` zachowany, test z pełną konfiguracją.
+- **`app.js` `renderModes`:** populuje `netSta`/`netSsid` z `s.wifi` oraz
+  `nEmail`/`nSms`/`nEmailTo`/`nSmtpHost`/`nSmtpUser`/`nSmsPhone`/`nSmsGw` z
+  `s.notify`. `netPass`/`nSmtpPass` celowo NIE populowane → odświeżenie nigdy nie
+  nadpisze świeżo wpisanego nowego hasła (i nigdy nie pokazuje sekretu).
+  `refresh(true)` co 2 s woła tylko dashboard (nie `render(s)`), więc inputy
+  formularza nie są nadpisywane co 2 s — tylko przy jawnym `refresh()` (po
+  zapisie/ładowaniu). Guard `if (s.wifi)`/`if (s.notify)` dla back-compat ze
+  starszym firmware nieemenującym bloków.
+- **Weryfikacja (żywy moduł 10.168.34.11):** `/api/state` → `wifi:{sta_mode:true,
+  ssid:"NCC-1701"}`, `notify:{email_enabled:true,sms_enabled:false,email_to:
+  "tomasz.kuehn@gmail.com",smtp_host:"smtp.gmail.com",smtp_user:"tomasz.kuehn@gmail.com",
+  sms_phone:"",sms_gateway:""}`; `wifi_pass`/`smtp_pass` nieobecne. Serwowany
+  `app.js` zawiera nowy kod echo (`s.wifi`/`s.notify`/`netSsid` — zasoby WWW
+  embedowane w app, flash app-only je aktualizuje). Uptime 75458→78513 ms (stable,
+  brak rebootu), `net_up=true`. Guard haseł zweryfikowany śledzeniem kodu
+  (`&& tmp[0]`: pusty łańcuch → skip → zachowaj); nie POSTowano pustych haseł na
+  żywo, by nie ryzykować wyzerowania realnego hasła Gmail / rozłączenia WiFi.
+  App 0xf7cf0 → 0xf80b0 (+960 B, 32 KB wolnego).

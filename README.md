@@ -156,6 +156,10 @@ overwritten` (patrz komentarz w `main/CMakeLists.txt`). Możliwe sekcje:
 - Sekcje konfiguracyjne (profil dobowy, wybieg pompy / tryb awaryjny,
   **zabezpieczenia i limity**, sieć, powiadomienia, symulacja) są domyślnie
   zwinięte do paska nagłówka i rozwijane kliknięciem.
+- **Sieć / Powiadomienia pokazują bieżące ustawienia** — SSID i tryb (klient/AP)
+  oraz odbiorcę/serwer SMTP/użytkownika/telefon/bramę SMS. Hasła (Wi-Fi, SMTP)
+  nie są pokazywane; puste pole hasła przy zapisie zachowuje bieżące (patrz
+  sekcja E).
 - **Profil dobowy** — grid **12 kolumn × 2 rzędy** (12 godzin w wierszu).
   Temperatura wyłączenia (OFF) nad załączenia (ON). Trzy sloty pamięci
   **na urządzeniu** (1/2/3) z jedno-klikowym zapisem i odczytem
@@ -460,9 +464,16 @@ pola pod lockiem i odkładają komendę bez blokowania (głębokość kolejki 2;
   upgrade byłby nieodróżnialny od „użytkownik wyłączył", stosujemy sentinel
   `notify_ev_ver`: przy pierwszym boot/upgrade `repair_config` ustawia oba na WŁ
   jednorazowo, a następnie ustawienia użytkownika są chronione (`ver=1`).
-  Stan przełączników jest udostępniany w `/api/state` (`notify_ev`), bez
-  ujawniania sekretów SMTP (te pozostają write-only). Poza zakresem:
-  powiadomienia o zmianach stanu i jakości czujników.
+  Stan przełączników jest udostępniany w `/api/state` (`notify_ev`). Poza
+  zakresem: powiadomienia o zmianach stanu i jakości czujników.
+- **Echo ustawień w UI i ochrona haseł:** karta Powiadomienia ładuje bieżące
+  wartości (odbiorca, serwer SMTP, użytkownik, telefon, brama SMS oraz
+  przełączniki e-mail/SMS) z bloku `notify` w `/api/state`; karta Sieć ładuje
+  bieżący SSID i tryb (klient/AP) z bloku `wifi`. **Hasła (SMTP, Wi-Fi) nie są
+  nigdy udostępniane do przeglądarki** — pole hasła pozostaje puste, a pusta
+  wartość przy zapisie (`POST /api/notify` / `POST /api/network`) oznacza
+  „zachowaj bieżące hasło" (nadpisanie następuje tylko po wpisaniu niepustej
+  wartości). Pozwala to zmienić np. odbiorcę bez ponownego wpisywania hasła.
 
 #### Diagnostyka i testowanie e-mail (przycisk „Testuj e-mail")
 
