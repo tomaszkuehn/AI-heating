@@ -630,9 +630,33 @@ function drawEnergyBars(cv, data) {
 }
 
 async function loadDaily() {
-  const data = await api('/api/daily') || [];
-  drawEnergyBars($('chartDaily'), data);
+  const raw = await api('/api/daily') || [];
+  drawEnergyBars($('chartDaily'), padDailyTo365(raw));
 }
+
+/* The device returns only days that have data plus (optionally) today's live
+ * row. Expand to a fixed 365-day window ending today so the chart always shows
+ * 365 segments (one per day); missing days become zero minutes / no temp.
+ * `raw` rows are [ts(YYYYMMDD), sys, ext, heat_mins]; today's live row (if
+ * present) overrides the matching historical key. "Today" is taken from the
+ * device clock (lastState.time_now) so the window stays aligned with the
+ * controller even when it runs on a synthetic/simulated epoch. */
+function padDailyTo365(raw) {
+  const DAY = 86400000;
+  const tnow = (lastState && lastState.time_now) ? lastState.time_now : Math.floor(Date.now() / 1000);
+  const today = new Date(tnow * 1000); today.setHours(0,0,0,0);
+  const map = new Map();
+  (raw || []).forEach(d => { if (d && d.length >= 4) map.set(d[0], d); });
+  const out = [];
+  for (let i = 364; i >= 0; i--) {
+    const dt = new Date(today.getTime() - i * DAY);
+    const key = dt.getFullYear()*10000 + (dt.getMonth()+1)*100 + dt.getDate();
+    if (map.has(key)) out.push(map.get(key));
+    else out.push([key, -99, -99, 0]);
+  }
+  return out;
+}
+
 
 /* ---- zoom + sensor toggles ---- */
 let chartZoomH = 24;

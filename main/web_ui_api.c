@@ -761,13 +761,11 @@ static esp_err_t h_daily(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     int n = 0;
     xSemaphoreTake(s_hist_mutex, portMAX_DELAY);
-    storage_read_daily_aggregates(12, s_daily, 400, &n);
+    storage_read_daily_aggregates(13, s_daily, 400, &n);
 
     /* Today's key (0 when wall-clock time is not yet valid). The historical
-     * daily.csv row for today (if any, e.g. right after a mid-day reboot) is
-     * skipped so it is replaced by the live aggregate below -- keeping today as
-     * the right-most column, updating in real time, and scrolling left only
-     * once a new day actually begins. */
+     * daily.csv row for today (if any) is skipped and replaced by the live
+     * aggregate below -- today is always the right-most, live-updating column. */
     int today_key = 0;
     minute_sample_t cur;
     bool have_cur = storage_read_daily_current(&cur, &today_key);
