@@ -60,6 +60,10 @@ zależy od warstwy WWW — awaria serwera HTTP nie blokuje sterowania (spec 13).
   „wyzerowany" limit nie wywoła fałszywej awarii `NO_HEAT_RISE`.
 - **LittleFS** — pliki użytkownika, profile dobowe, agregaty dobowe i logi
   (odporny na zaniki zasilania, lepszy od SPIFFS do logowania).
+- **Format `daily.csv`** — jeden wiersz na dzień:
+  `YYYYMMDD,śr_systemowa,śr_zewnętrzna,minuty_grzania`
+  (np. `20240115,21.30,3.10,420`). `minuty_grzania` = liczba minut w dobie z
+  aktywnym przekaźnikiem; znak `-99` w temperaturze oznacza brak odczytu.
 - **Historia minutowa (24 h) jest wyłącznie w RAM** — bufor pierścieniowy
   `s_ring[HE_RING_SIZE = 1440]` (`storage_manager.c`). Wykres 24 h czyta ten
   bufor bezpośrednio (`storage_ring_copy()`), więc zawsze pokazuje najświeższe
@@ -87,17 +91,23 @@ plików**. Mechanizmy (w `storage_manager.c`):
    Dodatkowo przy starcie `dedup_daily_csv()` czyści ewentualne powielone /
    nieposortowane wiersze z poprzednich uruchomień (zachowuje **ostatni** wiersz
    na każdy dzień, sortuje rosnąco) — `daily.csv` jest zawsze krótki i
-   posortowany.
-3. **Kompaktowanie logu zdarzeń.** `events.log` ma twardy limit
-   `HE_LOG_MAX_BYTES = 16 KB`; po przekroczeniu zachowywana jest tylko nowsza
-   połowa, wyrównana do pełnych wierszy (zapis do `.tmp` + `rename`,
-   `compact_log_tail()`). Ponadto `raise_fault()` **limituje częstotliwość**
-   zapisu: ten sam typ awarii (`fault_class_t`) trafia do logu co **najwyżej
-   raz na 60 s** (`s_last_log_fault` / `s_last_log_us`), więc oscylacje awarii
-   (np. `NO_HEAT_RISE` ↔ `SENSOR_IFACE`) nie zalewają logu tysiącami wpisów
-   między kompakcjami. Log można też **wyczyścić ręcznie** przyciskiem „Wyczyść
+   posortowany. **Bieżący dzień** nie czeka na agregację przy rolloverze —
+   endpoint `/api/daily` dokleja go w czasie rzeczywistym z bufora RAM
+   (`storage_read_daily_current()`), więc wykres energii pokazuje najświeższy
+   słupek bez czekania na północ.
+3. **Log zdarzeń w RAM.** Dziennik zdarzeń (restart, awarie) jest trzymany w
+   **buforze pierścieniowym w RAM** (`HE_LOG_MAX_ENTRIES = 100` wpisów), a nie
+   w pliku na LittleFS — eliminuje to całkowicie zapis flash przy logowaniu
+   (wcześniej log był dołączany do `events.log` przy każdym zdarzeniu i
+   kompaktowany). Historia zdarzeń jest krótka (operacyjna) i **nie przetrwa
+   restartu**, co jest akceptowalne — służy bieżącej diagnostyce w UI.
+   `raise_fault()` nadal **limituje częstotliwość** zapisu: ten sam typ awarii
+   (`fault_class_t`) trafia do logu co **najwyżej raz na 60 s**
+   (`s_last_log_fault` / `s_last_log_us`), więc oscylacje awarii (np.
+   `NO_HEAT_RISE` ↔ `SENSOR_IFACE`) nie zalewają bufora. Log można też
+   **wyczyścić ręcznie** przyciskiem „Wyczyść
    log" w sekcji „Logi / alarmy" (`POST /api/log/clear` → `storage_clear_log()`)
-   — usuwa cały plik `events.log` (operacji nie da się cofnąć).
+   — czyści bufor w RAM (operacji nie da się cofnąć).
 4. **Konfiguracja w NVS zapisywana tylko przy zmianie.** `storage_save_config()`
    jest wołane przy faktycznej edycji z UI/API, nie cyklicznie; NVS ma własny
    wear-leveling.
@@ -150,9 +160,16 @@ overwritten` (patrz komentarz w `main/CMakeLists.txt`). Możliwe sekcje:
   czas od ostatniego odczytu (`last_seen`) i skutek dla systemu (np.
   wykluczenie ze średniej). Dane o wieku odczytu pochodzą z pola `last_seen`
   (sekundy od ostatniej aktualizacji), dodanego do `/api/state`.
-- **Wykres zużycia energii (12 mies.)** — słupki minut grzania na dobę
+- **Wykres zużycia energii (365 dni)** — słupki **minut grzania na dobę**
   (pomarańczowe) z nałożoną linią średniej temperatury systemowej (niebieska).
-  Dane z `daily.csv` (kolumna `heat_mins`).
+  Każdy słupek to jeden dzień; oś X to stałe okno **365 dni** kończące się
+  dzisiaj. Dane pochodzą z `daily.csv` (kolumna `heat_mins`) uzupełnione o
+  **bieżący dzień w czasie rzeczywistym** (agregat z bufora RAM, widoczny jako
+  najbardziej prawy słupek, aktualizowany co odświeżenie). Gdy urządzeniu brakuje
+  danych za któryś dzień (np. nowa instalacja, luka po awarii), dzień ten jest
+  pokazywany jako **0 minut** — wykres zawsze ma 365 segmentów i przewija się w
+  lewo wraz z nadejściem nowego dnia. `heat_mins` to liczba minut w ciągu doby, w
+  których przekaźnik grzania był aktywny (zliczana z minutowych próbek).
 - Sekcje konfiguracyjne (profil dobowy, wybieg pompy / tryb awaryjny,
   **zabezpieczenia i limity**, sieć, powiadomienia, symulacja) są domyślnie
   zwinięte do paska nagłówka i rozwijane kliknięciem.
@@ -238,7 +255,7 @@ i używa do oceny `NO_HEAT_RISE` oraz `LOW_HEAT_RISE`.
 
 Dla każdego zdarzenia opisano: **warunek wystąpienia**, **sposób zakończenia**
 oraz **akcje i rezultat** w działaniu systemu. Wszystkie awarie i przejścia
-stanów trafiają do trwałego dziennika `events.log` (widoczny w UI: „Logi /
+stanów trafiają do dziennika zdarzeń w RAM (widoczny w UI: „Logi /
 alarmy"), a awarie dodatkowo wyzwalają powiadomienia (patrz niżej).
 
 Wpisy sprzed synchronizacji SNTP — gdy `time(NULL)` zwraca jeszcze czas
@@ -246,7 +263,7 @@ uruchomienia, a nie czas rzeczywisty — są wyświetlane jako **`boot +Ns`**
 (liczba sekund od startu), a nie jako data z 1970 r.; dzięki temu pierwszy
 wpis po restarcie (np. `FAULT_RESTART`) ma czytelny timestamp. Sekcja „Logi /
 alarmy" ma przycisk **„Wyczyść log"** (`POST /api/log/clear` →
-`storage_clear_log()`), który usuwa cały `events.log` — operacji nie da się
+`storage_clear_log()`), który czyści bufor w RAM — operacji nie da się
 cofnąć.
 
 ### A. Zdarzenia jakości i awarii czujników (`sensor_manager.c`)
@@ -327,7 +344,7 @@ Awaria jest podnoszona przez `raise_fault()`: ustawia stan awarii, **loguje**
 zdarzenie (severity 2) i **jednokrotnie** wysyła powiadomienie (flaga
 `s_notified` blokuje spam do czasu skasowania). Logowanie jest dodatkowo
 **limitowane czasowo**: ten sam typ awarii (`fault_class_t`) trafia do
-`events.log` co najwyżej raz na 60 s (`s_last_log_fault` / `s_last_log_us`),
+dziennika w RAM co najwyżej raz na 60 s (`s_last_log_fault` / `s_last_log_us`),
 więc szybkie oscylacje (np. `NO_HEAT_RISE` ↔ `SENSOR_IFACE`) nie zalewają logu
 tysiącami wpisów. Tylko jedna awaria jest aktywna naraz (o najwyższym
 priorytecie wykrycia).
@@ -398,7 +415,7 @@ priorytecie wykrycia).
 - **Warunek:** przy starcie `esp_reset_reason()` zwraca powód inny niż
   POWERON/SW/DEEPSLEEP (np. panic, watchdog, brownout) — wykrywane w `main.c`.
 - **Zakończenie:** zdarzenie jednorazowe (log przy starcie); nie „trwa".
-- **Akcje i rezultat:** wpis do `events.log` (severity 2) — ślad do diagnostyki
+- **Akcje i rezultat:** wpis do dziennika w RAM (severity 2) — ślad do diagnostyki
   niestabilności zasilania/oprogramowania. Konfiguracja jest odtwarzana z NVS,
   a uszkodzony profil naprawiany (`repair_config`).
 
@@ -482,20 +499,19 @@ konfigurację SMTP, wysyła testową wiadomość i pokazuje **pełny log rozmowy
 SMTP** (każda komenda `C:` i odpowiedź `S:` serwera). Dzięki temu widać
 dokładnie, na którym etapie występuje problem.
 
-**Ograniczenia implementacji SMTP:**
-- ESP32 wysyła SMTP **bez szyfrowania** (plain-text TCP, zwykle port 25).
-- **Nie obsługuje TLS/SSL** — publiczne serwery wymagające STARTTLS (Gmail,
-  Outlook.com, WP, OVH, Home.pl) **nie zadziałają bezpośrednio**.
+**Implementacja SMTP (klient):**
+- Połączenie TCP, a następnie **STARTTLS** (`openssl`-free, ręczna negocjacja
+  przez `mbedtls`) → szyfrowany kanał. Dzięki temu działają publiczne serwery
+  wymagające TLS: **Gmail** (`smtp.gmail.com:587`), Outlook.com, WP, OVH,
+  Home.pl itp.
+- **Uwierzytelnianie AUTH PLAIN** (login + hasło aplikacji). Dla Gmaila w polu
+  „Użytkownik SMTP" wpisz pełny adres, a w „Hasło SMTP" **hasło aplikacji**
+  (nie główne hasło konta Google).
 - Działa tylko w trybie **STA** (klient routera) — w trybie AP ESP32 nie ma
   dostępu do internetu.
 
-**Rekomendowane rozwiązanie dla Gmaila/Outlooka:** lokalny pośrednik SMTP
-(np. `msmtp` lub `postfix` na Raspberry Pi), który nasłuchuje plain-text
-na porcie 25 i forwarduje przez TLS do właściwego serwera. W polu „Serwer
-SMTP" w ESP32 wpisz adres IP tego pośrednika.
-
 **Pole „Serwer SMTP"** akceptuje format `host` lub `host:port` (np.
-`192.168.1.10:25`). Od wersji z dedykowanym polem **„Port"** port można
+`smtp.gmail.com:587`). Od wersji z dedykowanym polem **„Port"** port można
 podać osobno — wtedy ma on priorytet nad ewentualnym portem wklejonym w
 „Serwer SMTP" (czyli `host:port`). Pusty/domyślny port (0) oznacza: użyj
 portu z `host:port`, a gdy go brak — domyślnego **25**. Port jest
@@ -506,9 +522,10 @@ bezpieczeństwa upgrade'u) i widoczny w `/api/state` (`notify.smtp_port`).
 
 | Komunikat | Przyczyna | Rozwiązanie |
 |---|---|---|
-| `FAIL: cannot resolve host` | Nieprawidłowa nazwa hosta lub brak DNS | Użyj adresu IP |
-| `FAIL: connect refused/timeout` | Zły port, firewall lub serwer nie nasłuchuje | Sprawdź port (zwykle 25 dla plain-text) |
-| `RECV failed (timeout/close)` | Serwer przerwał połączenie (często wymaga TLS) | Potrzebny pośrednik bez TLS |
+| `FAIL: cannot resolve host` | Nieprawidłowa nazwa hosta lub brak DNS | Użyj adresu IP lub poprawnej nazwy |
+| `FAIL: connect refused/timeout` | Zły port, firewall lub serwer nie nasłuchuje | Sprawdź port (587 dla STARTTLS, 25 dla plain) |
+| `STARTTLS not supported` | Serwer nie oferuje STARTTLS | Użyj serwera z obsługą STARTTLS (np. Gmail 587) |
+| `535 authentication failed` | Złe hasło / brak hasła aplikacji | Dla Gmaila wygeneruj hasło aplikacji |
 | `OK: email accepted by server` | Sukces — mail dotarł do serwera SMTP | Sprawdź spam w skrzynce odbiorcy |
 
 **Testowe powiadomienie** można też wywołać ręcznie przez

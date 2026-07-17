@@ -13,7 +13,7 @@ System oferuje dostę użytkownikowi przez www. Ta strona oferuje:
 1. możliwość definiowania czujników i wag
 2. podgląd temperatury każdego z czujników w okresie ostatnich 24 godzin
 3. podgląd temperatury uśrednionej, podgląd profilu załączania.
-4. pogląd temperatury średniej systemu i średniej zewnętrznej z ostatnich 12 miesięcy z rozdzielczością 1 dnia
+4. pogląd temperatury średniej systemu i średniej zewnętrznej z ostatnich 365 dni z rozdzielczością 1 dnia (wykres słupkowy minut grzania na dobę)
 5. Jasny czerwony znacznik, że system w danej chwili grzeje.
 6. Znacznik zdrowia systemu - zielony jeśli wszystko działa bez zastrzeżeń.
 7. Strona powinna być wygodna w użyciu na desktopach i urządzeniach mobilnych.
