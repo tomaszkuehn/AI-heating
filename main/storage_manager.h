@@ -79,8 +79,10 @@ typedef struct {
     float    system_temp;
     float    external_temp;
     float    per_sensor[HE_MAX_SENSORS];
-    uint8_t  heating_active;   /* 0/1 */
+    uint8_t  heating_active;   /* 0/1 (per-minute relay state in the ring) */
     uint8_t  state;            /* control_state_t */
+    uint16_t heat_mins;        /* daily aggregate: total minutes heated that day
+                                  (only meaningful for rows from /api/daily) */
 } minute_sample_t;
 
 /* RAM ring-buffer capacity — exactly 24 h of 1-minute samples, never persisted. */
@@ -123,7 +125,12 @@ esp_err_t storage_read_samples_24h(minute_sample_t *out, int max, int *count);
 int       storage_ring_count(void);
 int       storage_ring_copy(int start, int count, minute_sample_t *out);
 esp_err_t storage_read_daily_aggregates(int months, minute_sample_t *out,
-                                        int max, int *count);
+                                         int max, int *count);
+/* Live aggregate for the CURRENT day from the RAM ring (no flash read).
+ * Returns true and fills `out` (ts=today's key, heating_active=minutes heated
+ * today) and *out_key (today's YYYYMMDD) only if today has >=1 sample AND the
+ * wall clock is valid; append after the historical rows. */
+bool      storage_read_daily_current(minute_sample_t *out, int *out_key);
 
 /* Event / alarm log (rate-limited appends). */
 typedef struct {

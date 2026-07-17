@@ -530,13 +530,52 @@ esp_err_t storage_read_daily_aggregates(int months, minute_sample_t *out,
             out[*count].ts = key;
             out[*count].system_temp = sys;
             out[*count].external_temp = (ext < -98.0f) ? he_nan() : ext;
-            out[*count].heating_active = (nf >= 4) ? (uint8_t)heat : 0;
+            out[*count].heat_mins = (nf >= 4) ? (uint16_t)heat : 0;
             (*count)++;
         }
     }
     fclose(f);
     xSemaphoreGive(s_fs_mutex);
     return ESP_OK;
+}
+
+/* Compute the live aggregate for the CURRENT calendar day straight from the
+ * in-RAM minute ring (no flash read), so the daily chart can show today's
+ * heating minutes updating in real time and stay as the right-most column.
+ * Returns true (and fills out, and *out_key with today's YYYYMMDD key) only if
+ * at least one sample exists for today; the caller appends it after the
+ * historical rows from daily.csv. */
+bool storage_read_daily_current(minute_sample_t *out, int *out_key)
+{
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    if (out_key) *out_key = 0;
+    if (!he_time_valid()) return false;            /* no real wall-clock day yet */
+    int today = day_key_from_ts((int32_t)time(NULL));
+    if (out_key) *out_key = today;
+    xSemaphoreTake(s_fs_mutex, portMAX_DELAY);
+    int start = (s_ring_count < HE_RING_SIZE) ? 0 : s_ring_head;
+    double sum_sys = 0, sum_ext = 0;
+    int n = 0, ext_n = 0, heat_mins = 0;
+    for (int i = 0; i < s_ring_count; i++) {
+        int idx = (start + i) % HE_RING_SIZE;
+        if (day_key_from_ts(s_ring[idx].ts) != today) continue;
+        if (he_isnan(s_ring[idx].system_temp)) continue;
+        sum_sys += s_ring[idx].system_temp;
+        n++;
+        if (s_ring[idx].heating_active) heat_mins++;
+        if (!he_isnan(s_ring[idx].external_temp)) {
+            sum_ext += s_ring[idx].external_temp;
+            ext_n++;
+        }
+    }
+    xSemaphoreGive(s_fs_mutex);
+    if (n == 0) return false;
+    out->ts = today;
+    out->system_temp = (float)(sum_sys / (double)n);
+    out->external_temp = ext_n ? (float)(sum_ext / (double)ext_n) : he_nan();
+    out->heat_mins = (uint16_t)heat_mins;   /* minutes heated so far today */
+    return true;
 }
 
 /* ---- Event / alarm log (in-RAM ring buffer) ---- */

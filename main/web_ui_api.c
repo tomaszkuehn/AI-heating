@@ -762,14 +762,36 @@ static esp_err_t h_daily(httpd_req_t *req)
     int n = 0;
     xSemaphoreTake(s_hist_mutex, portMAX_DELAY);
     storage_read_daily_aggregates(12, s_daily, 400, &n);
+
+    /* Today's key (0 when wall-clock time is not yet valid). The historical
+     * daily.csv row for today (if any, e.g. right after a mid-day reboot) is
+     * skipped so it is replaced by the live aggregate below -- keeping today as
+     * the right-most column, updating in real time, and scrolling left only
+     * once a new day actually begins. */
+    int today_key = 0;
+    minute_sample_t cur;
+    bool have_cur = storage_read_daily_current(&cur, &today_key);
+
     httpd_resp_send_chunk(req, "[", 1);
     char line[80];
+    bool first = true;
     for (int i = 0; i < n; i++) {
-        int L = snprintf(line, sizeof(line), "%s[%d,%.2f,%.2f,%u]", i ? "," : "",
+        if (today_key && s_daily[i].ts == today_key) continue;   /* superseded by live */
+        int L = snprintf(line, sizeof(line), "%s[%d,%.2f,%.2f,%u]", first ? "" : ",",
                          (int)s_daily[i].ts,
                          he_isnan(s_daily[i].system_temp) ? -99.0f : s_daily[i].system_temp,
                          he_isnan(s_daily[i].external_temp) ? -99.0f : s_daily[i].external_temp,
-                         (unsigned)s_daily[i].heating_active);
+                         (unsigned)s_daily[i].heat_mins);
+        if (httpd_resp_send_chunk(req, line, L) != ESP_OK) { xSemaphoreGive(s_hist_mutex); httpd_resp_send_chunk(req, NULL, 0); return ESP_FAIL; }
+        first = false;
+    }
+    /* Append the live aggregate for the current day (right-most column). */
+    if (have_cur) {
+        int L = snprintf(line, sizeof(line), "%s[%d,%.2f,%.2f,%u]", first ? "" : ",",
+                         (int)cur.ts,
+                         he_isnan(cur.system_temp) ? -99.0f : cur.system_temp,
+                         he_isnan(cur.external_temp) ? -99.0f : cur.external_temp,
+                         (unsigned)cur.heat_mins);
         if (httpd_resp_send_chunk(req, line, L) != ESP_OK) { xSemaphoreGive(s_hist_mutex); httpd_resp_send_chunk(req, NULL, 0); return ESP_FAIL; }
     }
     xSemaphoreGive(s_hist_mutex);
