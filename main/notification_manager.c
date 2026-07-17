@@ -448,6 +448,62 @@ static bool sms_send(const notify_cfg_t *c, const char *message)
     return true;
 }
 
+/* ---- E-mail rate limiting (per distinct event) ----
+ * The same event (a fault class + message, or a restart notice) must not
+ * generate more than one e-mail within EMAIL_RATE_WINDOW_US. Repeated events
+ * inside the window are suppressed and counted; when the window lapses the next
+ * occurrence is sent and the accumulated repeat count is reported in the body
+ * so the recipient knows it fired N times, not just once. Keys are matched by a
+ * short string (e.g. "alert:<fault>:<msg>", "restart:<name>") so any event type
+ * can be throttled uniformly. The worker task is single-threaded, so the table
+ * needs no locking. */
+#define EMAIL_RATE_WINDOW_US   (2LL * 3600 * 1000 * 1000)   /* 2 hours */
+#define EMAIL_RATE_SLOTS       8
+typedef struct {
+    char    key[56];
+    int64_t last_sent_us;
+    uint16_t repeats;       /* suppressed occurrences since last_sent_us */
+} email_rate_t;
+static email_rate_t s_email_rate[EMAIL_RATE_SLOTS];
+static int s_email_rate_next = 0;
+
+/* Returns true if an e-mail for `key` may be sent now. If false, the event was
+ * suppressed (and `repeats_out` holds how many times it has repeated). If true
+ * after a window lapse, `repeats_out` holds the repeats accumulated in the
+ * previous window (0 for a genuinely new key). */
+static bool email_rate_allow(const char *key, int *repeats_out)
+{
+    int64_t now = esp_timer_get_time();
+    email_rate_t *slot = NULL;
+    for (int i = 0; i < EMAIL_RATE_SLOTS; i++) {
+        if (s_email_rate[i].key[0] &&
+            strncmp(s_email_rate[i].key, key, sizeof(s_email_rate[i].key) - 1) == 0) {
+            slot = &s_email_rate[i];
+            break;
+        }
+    }
+    if (slot) {
+        if (now - slot->last_sent_us < EMAIL_RATE_WINDOW_US) {
+            if (slot->repeats < 65535) slot->repeats++;
+            *repeats_out = (int)slot->repeats;
+            return false;          /* throttled */
+        }
+        *repeats_out = (int)slot->repeats;   /* report prior-window repeats */
+        slot->repeats = 0;
+        slot->last_sent_us = now;
+        return true;
+    }
+    /* New key: allocate a slot (round-robin eviction). */
+    slot = &s_email_rate[s_email_rate_next];
+    s_email_rate_next = (s_email_rate_next + 1) % EMAIL_RATE_SLOTS;
+    strncpy(slot->key, key, sizeof(slot->key) - 1);
+    slot->key[sizeof(slot->key) - 1] = '\0';
+    slot->last_sent_us = now;
+    slot->repeats = 0;
+    *repeats_out = 0;
+    return true;
+}
+
 /* Worker: drains the queue, performing blocking SMTP/SMS off the control loop.
  * Not subscribed to esp_task_wdt (it may block for seconds on network I/O). */
 static void notify_worker_task(void *arg)
@@ -538,9 +594,24 @@ void notification_send_alert(const notify_cfg_t *cfg, fault_class_t f,
     char subject[64];
     snprintf(subject, sizeof(subject), "[Heating] fault %d", (int)f);
     s_diag[0] = '\0'; s_diag_len = 0;
+
+    /* Throttle e-mail per distinct event (fault class + message), max one per
+     * 2h window; report repeats accumulated in the previous window. */
+    char rkey[72];
+    snprintf(rkey, sizeof(rkey), "alert:%d:%s", (int)f, message);
+    int repeats = 0;
     if (cfg->email_enabled && cfg->email_to[0]) {
-        if (!smtp_send(cfg, smtp_port, subject, message))
-            ESP_LOGW(TAG, "email send failed");
+        if (email_rate_allow(rkey, &repeats)) {
+            char body[384];
+            int p = snprintf(body, sizeof(body), "%s", message);
+            if (repeats > 0 && p > 0 && p < (int)sizeof(body))
+                p += snprintf(body + p, sizeof(body) - p,
+                              "\r\n\r\n(Powtorzono %d razy w ciagu ostatnich 2h.)", repeats);
+            if (!smtp_send(cfg, smtp_port, subject, body))
+                ESP_LOGW(TAG, "email send failed");
+        } else {
+            ESP_LOGI(TAG, "alert e-mail throttled (fault %d, %d repeats)", (int)f, repeats);
+        }
     }
     if (cfg->sms_enabled && cfg->sms_phone[0]) {
         if (!sms_send(cfg, message))
@@ -611,9 +682,24 @@ void notification_send_restart(const notify_cfg_t *cfg, const char *device_name,
      * so a later test-email probe doesn't surface stale output. */
     s_diag[0] = '\0'; s_diag_len = 0;
 
+    /* Throttle restart e-mail per device to one per 2h window (a boot-loop would
+     * otherwise spam the inbox); report repeats from the previous window. */
+    char rkey[72];
+    snprintf(rkey, sizeof(rkey), "restart:%s", device_name);
+    int repeats = 0;
     if (cfg->email_enabled && cfg->email_to[0]) {
-        if (!smtp_send(cfg, smtp_port, subject, body))
-            ESP_LOGW(TAG, "restart email failed");
+        if (email_rate_allow(rkey, &repeats)) {
+            if (repeats > 0) {
+                int p = (int)strlen(body);
+                if (p > 0 && p < (int)sizeof(body))
+                    snprintf(body + p, sizeof(body) - p,
+                             "\r\n\r\n(Powtorzono %d razy w ciagu ostatnich 2h.)", repeats);
+            }
+            if (!smtp_send(cfg, smtp_port, subject, body))
+                ESP_LOGW(TAG, "restart email failed");
+        } else {
+            ESP_LOGI(TAG, "restart e-mail throttled (%d repeats)", repeats);
+        }
     }
     if (cfg->sms_enabled && cfg->sms_phone[0]) {
         char sms_msg[64];
