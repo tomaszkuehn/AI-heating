@@ -341,7 +341,7 @@ void control_tick(int dt_ms)
                 notification_dispatch_restart(&s_cfg->notify,
                     s_cfg->device_name, sys_temp, ext_temp,
                     healthy, total, s_cfg->sensors, s_cfg->sensor_count,
-                    s_cfg->has_external);
+                    s_cfg->has_external, s_cfg->smtp_port);
             }
         }
     }

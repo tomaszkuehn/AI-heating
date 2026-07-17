@@ -42,3 +42,7 @@ Desktop.ini
 # Temporary / error files
 error.pdf
 error.odt
+
+# IJFW tool memory (external tool state, not project source)
+.ijfw/
+ijfw/

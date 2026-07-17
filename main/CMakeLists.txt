@@ -52,7 +52,8 @@ idf_component_register(
         lwip
         driver
         mdns
-)
+        mbedtls
+    )
 
 if(NOT CMAKE_BUILD_EARLY_EXPANSION)
     find_program(GZIP_TOOL gzip)

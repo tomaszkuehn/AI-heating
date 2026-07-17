@@ -335,7 +335,8 @@ static esp_err_t h_state(httpd_req_t *req)
     json_escape(s_cfg->notify.email_to, ebuf, sizeof(ebuf));
     p += snprintf(b + p, sizeof(b) - p, "%s\",\"smtp_host\":\"", ebuf);
     json_escape(s_cfg->notify.smtp_host, ebuf, sizeof(ebuf));
-    p += snprintf(b + p, sizeof(b) - p, "%s\",\"smtp_user\":\"", ebuf);
+    p += snprintf(b + p, sizeof(b) - p, "%s\",\"smtp_port\":%d,\"smtp_user\":\"",
+                 ebuf, s_cfg->smtp_port);
     json_escape(s_cfg->notify.smtp_user, ebuf, sizeof(ebuf));
     p += snprintf(b + p, sizeof(b) - p, "%s\",\"sms_phone\":\"", ebuf);
     json_escape(s_cfg->notify.sms_phone, ebuf, sizeof(ebuf));
@@ -553,6 +554,11 @@ static esp_err_t h_notify(httpd_req_t *req)
     json_str(body, "email_to", s_cfg->notify.email_to, sizeof(s_cfg->notify.email_to));
     json_str(body, "smtp_host", s_cfg->notify.smtp_host, sizeof(s_cfg->notify.smtp_host));
     json_str(body, "smtp_user", s_cfg->notify.smtp_user, sizeof(s_cfg->notify.smtp_user));
+    int p;
+    if (json_int(body, "smtp_port", &p)) {
+        if (p < 1 || p > 65535) p = HE_DEFAULT_SMTP_PORT;
+        s_cfg->smtp_port = p;
+    }
     /* The UI does not echo the SMTP password, so an empty value here means
      * "keep the stored password" — only overwrite when a new one is typed. */
     if (json_str(body, "smtp_pass", tmp, sizeof(tmp)) && tmp[0]) {
@@ -570,8 +576,9 @@ static esp_err_t h_notify_test(httpd_req_t *req)
 {
     CFG_LOCK();
     notify_cfg_t cfg_copy = s_cfg->notify;  /* snapshot under lock */
+    int port_copy = s_cfg->smtp_port;
     he_config_unlock();
-    char *diag = notification_test_email(&cfg_copy);
+    char *diag = notification_test_email(&cfg_copy, port_copy);
     if (!diag) { send_text(req, "internal error", 500); return ESP_FAIL; }
     /* Return as JSON so the frontend can display it nicely. */
     char buf[1200];

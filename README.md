@@ -495,7 +495,12 @@ na porcie 25 i forwarduje przez TLS do właściwego serwera. W polu „Serwer
 SMTP" w ESP32 wpisz adres IP tego pośrednika.
 
 **Pole „Serwer SMTP"** akceptuje format `host` lub `host:port` (np.
-`192.168.1.10:25`).
+`192.168.1.10:25`). Od wersji z dedykowanym polem **„Port"** port można
+podać osobno — wtedy ma on priorytet nad ewentualnym portem wklejonym w
+„Serwer SMTP" (czyli `host:port`). Pusty/domyślny port (0) oznacza: użyj
+portu z `host:port`, a gdy go brak — domyślnego **25**. Port jest
+przechowywany w NVS (`smtp_port`, dołączony na końcu `system_config_t` dla
+bezpieczeństwa upgrade'u) i widoczny w `/api/state` (`notify.smtp_port`).
 
 **Najczęstsze błędy (widoczne w logu diagnostycznym):**
 

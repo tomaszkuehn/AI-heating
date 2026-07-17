@@ -65,6 +65,12 @@ typedef struct {
     int                 min_on_sec;                 /* min continuous ON before OFF allowed (default 90)  */
     int                 min_off_sec;                /* min continuous OFF before ON allowed (default 90) */
     int                 anti_osc_lock_sec;          /* anti-oscillation lock after state change (default 120) */
+    /* ---- Dedicated SMTP port (configurable e-mail sending, default 25).
+     * Tail-appended for NVS upgrade safety: an older short-read blob zero-fills
+     * this to 0, and repair_config() defaults it. A dedicated field avoids
+     * overloading the smtp_host string; smtp_host "host:port" still works as a
+     * fallback when this is left at 0. Do NOT reorder fields above this line. */
+    int                 smtp_port;                 /* explicit SMTP port (0 => use host:port or default 25) */
 } system_config_t;
 
 /* One minute sample record (all active sensors + system + external). */
@@ -83,7 +89,7 @@ typedef struct {
 /* Legacy batch constant (kept for documentation; ring buffer supersedes it). */
 #define HE_SAMPLE_FLUSH_BATCH   15
 
-#define HE_LOG_MAX_BYTES        16384 /* events.log is compacted past this   */
+#define HE_LOG_MAX_ENTRIES      100   /* in-RAM event ring (see storage_manager.c) */
 #define HE_SAMPLE_RETAIN_DAYS   2     /* keep today+yesterday; prune older    */
 
 /* Flash wear assessment (ESP32 NOR flash: ~100 000 erase cycles / 4 KB sector). */

@@ -50,6 +50,7 @@ extern "C" {
 
 /* ---- Device identity & protection-limit defaults ---- */
 #define HE_DEFAULT_DEVICE_NAME      "Sterownik CO"
+#define HE_DEFAULT_SMTP_PORT        25          /* plain-text SMTP submission port */
 #define HE_DEFAULT_FAULT_GRACE_SEC  300        /* NO_HEAT_RISE grace (5 min)    */
 #define HE_DEFAULT_MAX_ON_SEC       14400      /* max continuous heating (4 h)  */
 #define HE_DEFAULT_MAX_ON_BREAK_SEC 600        /* forced break after max-on      */

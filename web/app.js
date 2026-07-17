@@ -320,6 +320,7 @@ function renderModes(s) {
       if ($('nSms'))      $('nSms').checked      = !!s.notify.sms_enabled;
       if ($('nEmailTo'))  $('nEmailTo').value    = s.notify.email_to || '';
       if ($('nSmtpHost')) $('nSmtpHost').value   = s.notify.smtp_host || '';
+      if ($('nSmtpPort')) $('nSmtpPort').value   = s.notify.smtp_port || 25;
       if ($('nSmtpUser')) $('nSmtpUser').value   = s.notify.smtp_user || '';
       if ($('nSmsPhone')) $('nSmsPhone').value   = s.notify.sms_phone || '';
       if ($('nSmsGw'))    $('nSmsGw').value      = s.notify.sms_gateway || '';
@@ -695,12 +696,12 @@ $('btnLogClear').onclick = () => {
 $('btnPump').onclick = () => post('/api/pump', { enabled: $('pumpEn').checked, impulse: +$('pumpImpulse').value, period: +$('pumpPeriod').value, total: +$('pumpTotal').value }, true).then(() => refresh());
 $('btnEm').onclick = () => post('/api/emergency', { enabled: $('emEn').checked, on: +$('emOn').value, period: +$('emPeriod').value, on_fault: $('emFault').checked }, true).then(() => refresh());
 $('btnNet').onclick = () => post('/api/network', { sta_mode: $('netSta').checked, ssid: $('netSsid').value, pass: $('netPass').value }, true).then(() => refresh());
-$('btnNotify').onclick = () => post('/api/notify', { email_enabled: $('nEmail').checked, email_to: $('nEmailTo').value, smtp_host: $('nSmtpHost').value, smtp_user: $('nSmtpUser').value, smtp_pass: $('nSmtpPass').value, sms_enabled: $('nSms').checked, sms_phone: $('nSmsPhone').value, sms_gateway: $('nSmsGw').value }, true).then(() => refresh());
+$('btnNotify').onclick = () => post('/api/notify', { email_enabled: $('nEmail').checked, email_to: $('nEmailTo').value, smtp_host: $('nSmtpHost').value, smtp_port: +$('nSmtpPort').value, smtp_user: $('nSmtpUser').value, smtp_pass: $('nSmtpPass').value, sms_enabled: $('nSms').checked, sms_phone: $('nSmsPhone').value, sms_gateway: $('nSmsGw').value }, true).then(() => refresh());
 $('btnNotifyTest').onclick = async () => {
   const res = $('notifyResult');
   res.style.display = 'block'; res.textContent = 'Wysyłanie...';
   /* Save first, then test with current config. */
-  await post('/api/notify', { email_enabled: $('nEmail').checked, email_to: $('nEmailTo').value, smtp_host: $('nSmtpHost').value, smtp_user: $('nSmtpUser').value, smtp_pass: $('nSmtpPass').value }, true);
+  await post('/api/notify', { email_enabled: $('nEmail').checked, email_to: $('nEmailTo').value, smtp_host: $('nSmtpHost').value, smtp_port: +$('nSmtpPort').value, smtp_user: $('nSmtpUser').value, smtp_pass: $('nSmtpPass').value }, true);
   const r = await post('/api/notify/test', '');
   if (r && r.result) {
     res.textContent = r.result;

@@ -20,21 +20,21 @@ void notification_init(void);
  * hold he_config_lock so the snapshotted fields are consistent; these never block.
  * No-op when neither channel is enabled or the queue is absent/full (dropped + log). */
 void notification_dispatch_alert(const notify_cfg_t *cfg, fault_class_t f,
-                                 const char *message);
+                                 const char *message, int smtp_port);
 void notification_dispatch_restart(const notify_cfg_t *cfg, const char *device_name,
     float sys_temp, float ext_temp, int healthy, int total,
-    const sensor_t *sensors, int sensor_count, bool has_external);
+    const sensor_t *sensors, int sensor_count, bool has_external, int smtp_port);
 
 /* Synchronous send (used by the off-loop worker and the test handler). */
 void notification_send_alert(const notify_cfg_t *cfg, fault_class_t f,
-                             const char *message);
+                            const char *message, int smtp_port);
 void notification_send_restart(const notify_cfg_t *cfg, const char *device_name,
     float sys_temp, float ext_temp, int healthy, int total,
-    const sensor_t *sensors, int sensor_count, bool has_external);
+    const sensor_t *sensors, int sensor_count, bool has_external, int smtp_port);
 
 /* Test email delivery using the supplied config. Returns a malloc'd diagnostic
  * string the caller must free(), or NULL on immediate failure. */
-char *notification_test_email(const notify_cfg_t *cfg);
+char *notification_test_email(const notify_cfg_t *cfg, int smtp_port);
 
 #ifdef __cplusplus
 }

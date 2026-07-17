@@ -17,6 +17,15 @@ CONFIG_ESP_TASK_WDT_EN=y
 # --- WiFi ---
 CONFIG_ESP_WIFI_ENABLED=y
 CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
+# The SoftAP config path (network_manager.c) hard-codes WPA2_PSK; the firmware
+# never uses WPA3/SAE/OWE or WPS. Disabling them drops the SAE/Dragonfly/OWE
+# crypto from libwpa_supplicant.a (~hundreds of KB of flash) with no behaviour
+# change for this device.
+CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=n
+CONFIG_ESP_WIFI_ENABLE_SAE_PK=n
+CONFIG_ESP_WIFI_SOFTAP_SAE_SUPPORT=n
+CONFIG_ESP_WIFI_ENABLE_WPA3_OWE_STA=n
+# CONFIG_WPS is already off (no app code references WPS).
 
 # --- HTTP server ---
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=2048
@@ -32,3 +41,12 @@ CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
 
 # --- Main task stack ---
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
+
+# --- mbedTLS (opportunistic STARTTLS for SMTP only) ---
+# The SMTP client upgrades to TLS with MBEDTLS_SSL_VERIFY_NONE (no chain
+# validation), and nothing else in the firmware performs TLS server-side or
+# certificate verification. So we drop the ~50 KB embedded CA bundle and the
+# TLS server handshake code to keep the app inside the 1 MB factory partition.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=n
+CONFIG_MBEDTLS_TLS_SERVER=n
+CONFIG_MBEDTLS_TLS_CLIENT_ONLY=y

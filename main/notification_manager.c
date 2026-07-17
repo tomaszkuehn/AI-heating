@@ -14,6 +14,12 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 
+#include <errno.h>
+#include "mbedtls/ssl.h"
+#include "mbedtls/entropy.h"
+#include "mbedtls/ctr_drbg.h"
+#include "mbedtls/net_sockets.h"
+
 static const char *TAG = "notify";
 
 /* Diagnostic buffer for the last SMTP attempt. */
@@ -60,6 +66,7 @@ typedef struct {
 typedef struct {
     notify_kind_t kind;
     notify_cfg_t  cfg;
+    int           smtp_port;   /* explicit SMTP port (0 => host:port or default) */
     union {
         notify_restart_t restart;
         notify_alert_t   alert;
@@ -70,11 +77,13 @@ typedef struct {
 static QueueHandle_t s_notify_queue = NULL;
 
 /* base64-encode `in` (NUL-terminated) into `out`; returns out. */
-static char *b64(const char *in, char *out, size_t outlen)
+/* Base64-encode `n` raw bytes (may contain embedded NULs -- needed for the
+ * SASL PLAIN blob "\0user\0pass"). */
+static char *b64n(const char *in, size_t n, char *out, size_t outlen)
 {
     static const char tbl[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    size_t n = strlen(in), o = 0;
+    size_t o = 0;
     for (size_t i = 0; i < n && o + 4 < outlen; i += 3) {
         unsigned v = (unsigned char)in[i] << 16;
         int rem = (int)(n - i);
@@ -87,6 +96,11 @@ static char *b64(const char *in, char *out, size_t outlen)
     }
     out[o] = '\0';
     return out;
+}
+
+static char *b64(const char *in, char *out, size_t outlen)
+{
+    return b64n(in, strlen(in), out, outlen);
 }
 
 /* Percent-encode everything but RFC3986 unreserved chars (for URL query use). */
@@ -122,16 +136,153 @@ static void sanitize_line(const char *in, char *out, size_t outlen)
     out[o] = '\0';
 }
 
-/* Minimal best-effort SMTP submission over plain TCP (AUTH LOGIN supported).
- * Intentionally simple: failures are logged and swallowed. */
-static bool smtp_send(const notify_cfg_t *c, const char *subject, const char *body)
+/* ---- Opportunistic STARTTLS for the plain-TCP SMTP client below ----
+ * The ESP32 SMTP path is intentionally simple (no TLS by default, port 25 to a
+ * local relay). When the server advertises STARTTLS in its EHLO response we
+ * upgrade the already-connected socket to a TLS session (mbedTLS) so the
+ * AUTH credentials and message are no longer sent in clear text. This is
+ * "opportunistic" encryption only: we use MBEDTLS_SSL_VERIFY_NONE, i.e. the
+ * server certificate chain is NOT validated (we have no CA bundle on the
+ * device). That protects the password from passive eavesdropping on the wire
+ * but not from an active MITM. A server that does not offer STARTTLS is
+ * contacted in clear text exactly as before (backward compatible). */
+
+typedef struct {
+    int                  sock;
+    bool                 tls;
+    mbedtls_ssl_context *ssl;
+} smtp_conn_t;
+
+static int smtp_tls_send(void *ctx, const unsigned char *buf, size_t len)
+{
+    int sock = *(const int *)ctx;
+    int n = (int)send(sock, buf, len, 0);
+    if (n >= 0) return n;
+    int e = errno;
+    if (e == EAGAIN || e == EWOULDBLOCK || e == EINTR) return MBEDTLS_ERR_SSL_WANT_WRITE;
+    return MBEDTLS_ERR_NET_SEND_FAILED;
+}
+
+static int smtp_tls_recv(void *ctx, unsigned char *buf, size_t len)
+{
+    int sock = *(const int *)ctx;
+    int n = (int)recv(sock, buf, len, 0);
+    if (n > 0) return n;
+    if (n == 0) return MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY;
+    int e = errno;
+    if (e == EAGAIN || e == EWOULDBLOCK || e == EINTR) return MBEDTLS_ERR_SSL_WANT_READ;
+    return MBEDTLS_ERR_NET_RECV_FAILED;
+}
+
+static int smtp_net_recv(smtp_conn_t *c, char *buf, size_t len)
+{
+    if (c->tls) return mbedtls_ssl_read(c->ssl, (unsigned char *)buf, len);
+    return (int)recv(c->sock, buf, len, 0);
+}
+
+static int smtp_net_send(smtp_conn_t *c, const char *buf, size_t len)
+{
+    if (c->tls) return mbedtls_ssl_write(c->ssl, (const unsigned char *)buf, len);
+    return (int)send(c->sock, buf, len, 0);
+}
+
+/* Read one complete SMTP reply into `buf` and return its 3-digit status code
+ * (or -1 on error/timeout). Handles multi-line replies: per RFC 5321 a line
+ * "NNN-text" is a continuation and "NNN text" (space after the code) is the
+ * final line. This works for both single-line (greeting, STARTTLS 220) and
+ * multi-line (EHLO) replies -- the previous substring-terminator approach only
+ * matched multi-line replies and spun to a timeout on single-line ones. */
+static int smtp_read_reply(smtp_conn_t *c, char *buf, size_t max)
+{
+    size_t used = 0;
+    int tries = 0;
+    buf[0] = '\0';               /* read each reply fresh -- never match stale text */
+    while (used < max - 1) {
+        char tmp[256];
+        int n = smtp_net_recv(c, tmp, sizeof(tmp) - 1);
+        if (n == MBEDTLS_ERR_SSL_WANT_READ || n == MBEDTLS_ERR_SSL_WANT_WRITE) {
+            if (++tries >= 3) { diag_append("[read timeout]\n"); return -1; }
+            continue;
+        }
+        if (n <= 0) { diag_append("[read err %d]\n", n); return -1; }
+        if ((size_t)n > max - 1 - used) n = (int)(max - 1 - used);
+        memcpy(buf + used, tmp, (size_t)n);
+        used += (size_t)n;
+        buf[used] = '\0';
+        /* Scan complete lines; a final line is "NNN<space>...\r\n". */
+        char *p = buf;
+        char *eol;
+        while ((eol = strstr(p, "\r\n")) != NULL) {
+            if (eol - p >= 4 &&
+                p[0] >= '0' && p[0] <= '9' &&
+                p[1] >= '0' && p[1] <= '9' &&
+                p[2] >= '0' && p[2] <= '9' &&
+                p[3] == ' ') {
+                return (p[0] - '0') * 100 + (p[1] - '0') * 10 + (p[2] - '0');
+            }
+            p = eol + 2;
+        }
+    }
+    return -1;
+}
+
+/* Upgrade `c->sock` to a TLS client session. The ssl/config/entropy/ctr_drbg
+ * contexts are owned by the caller because mbedtls_ssl_setup() stores a POINTER
+ * to `conf` (and conf references the RNG) inside the ssl context: they must stay
+ * alive for the whole TLS session, i.e. until mbedtls_ssl_free() in smtp_send.
+ * This function only initialises and configures them (so the caller can always
+ * free them safely) and performs the handshake; it never frees them. */
+static bool smtp_starttls(smtp_conn_t *c, const char *host,
+                          mbedtls_ssl_config *conf,
+                          mbedtls_entropy_context *entropy,
+                          mbedtls_ctr_drbg_context *ctr)
+{
+    mbedtls_ssl_init(c->ssl);
+    mbedtls_ssl_config_init(conf);
+    mbedtls_entropy_init(entropy);
+    mbedtls_ctr_drbg_init(ctr);
+
+    int ret = mbedtls_ctr_drbg_seed(ctr, mbedtls_entropy_func, entropy, NULL, 0);
+    if (ret != 0) { diag_append("FAIL: TLS rng seed (%d)\n", ret); return false; }
+    ret = mbedtls_ssl_config_defaults(conf, MBEDTLS_SSL_IS_CLIENT,
+                                     MBEDTLS_SSL_TRANSPORT_STREAM,
+                                     MBEDTLS_SSL_PRESET_DEFAULT);
+    if (ret != 0) { diag_append("FAIL: TLS config (%d)\n", ret); return false; }
+    /* Opportunistic: encrypt but do not authenticate the server (no CA bundle). */
+    mbedtls_ssl_conf_authmode(conf, MBEDTLS_SSL_VERIFY_NONE);
+    mbedtls_ssl_conf_rng(conf, mbedtls_ctr_drbg_random, ctr);
+    ret = mbedtls_ssl_setup(c->ssl, conf);
+    if (ret != 0) { diag_append("FAIL: TLS setup (%d)\n", ret); return false; }
+    ret = mbedtls_ssl_set_hostname(c->ssl, host);
+    if (ret != 0) { diag_append("FAIL: TLS hostname (%d)\n", ret); return false; }
+    mbedtls_ssl_set_bio(c->ssl, &c->sock, smtp_tls_send, smtp_tls_recv, NULL);
+    int hs_tries = 0;
+    while ((ret = mbedtls_ssl_handshake(c->ssl)) != 0) {
+        if ((ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) && ++hs_tries >= 8) {
+            diag_append("FAIL: TLS handshake timeout\n");
+            return false;
+        }
+        if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
+            diag_append("FAIL: TLS handshake (%d)\n", ret);
+            return false;
+        }
+    }
+    return true;
+}
+
+/* Minimal best-effort SMTP submission over plain TCP, with opportunistic
+ * STARTTLS (see smtp_starttls above). AUTH LOGIN supported. Failures are
+ * logged and swallowed. */
+static bool smtp_send(const notify_cfg_t *c, int port_arg, const char *subject, const char *body)
 {
     if (!c->smtp_host[0]) return false;
-    char host[80]; int port = 25;
-    /* Allow "host:port" in smtp_host. */
+    char host[80];
+    /* Allow "host:port" in smtp_host as a fallback. The dedicated smtp_port
+     * field, when set (>0), takes precedence over any port embedded in the host. */
     strncpy(host, c->smtp_host, sizeof(host) - 1); host[sizeof(host) - 1] = '\0';
+    int port = (port_arg > 0) ? port_arg : 25;
     char *colon = strchr(host, ':');
-    if (colon) { *colon = '\0'; port = atoi(colon + 1); }
+    if (colon) { *colon = '\0'; if (port_arg <= 0) port = atoi(colon + 1); }
 
     const struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
     struct addrinfo *res = NULL;
@@ -154,9 +305,32 @@ static bool smtp_send(const notify_cfg_t *c, const char *subject, const char *bo
     }
     freeaddrinfo(res);
 
-    char rx[256]; char tx[512];
-    #define RECV() do { int n = recv(sock, rx, sizeof(rx)-1, 0); if (n<=0) { diag_append("RECV failed (timeout/close)\n"); goto done; } rx[n]=0; diag_append("S: %s", rx); } while (0)
-    #define SEND(s) do { int L=strlen(s); if (send(sock,s,L,0)!=L) { diag_append("SEND failed\n"); goto done; } diag_append("C: %s", s); } while (0)
+    /* TLS contexts owned here: they must outlive the handshake and stay valid
+     * for the whole session (mbedtls_ssl keeps pointers into conf/rng). Freed
+     * together with the ssl context on both exit paths when tls_init is set. */
+    mbedtls_ssl_context ssl;
+    mbedtls_ssl_config  tls_conf;
+    mbedtls_entropy_context tls_entropy;
+    mbedtls_ctr_drbg_context tls_ctr;
+    bool tls_init = false;   /* tracks mbedtls_ssl_init for safe free() */
+    smtp_conn_t conn = { .sock = sock, .tls = false, .ssl = &ssl };
+
+    char rx[512]; char tx[512];
+    #define RECV() do { \
+        int code = smtp_read_reply(&conn, rx, sizeof(rx)); \
+        if (code < 0) { diag_append("RECV failed (tls=%d)\n", conn.tls); goto done; } \
+        diag_append("S: %s", rx); \
+    } while (0)
+    #define SEND(s) do { \
+        const char *sptr = (s); size_t slen = strlen(sptr), spos = 0; int sret, stries = 0; \
+        while (spos < slen) { \
+            sret = smtp_net_send(&conn, sptr + spos, slen - spos); \
+            if (sret > 0) { spos += (size_t)sret; stries = 0; } \
+            else if ((sret == MBEDTLS_ERR_SSL_WANT_WRITE || sret == MBEDTLS_ERR_SSL_WANT_READ) && ++stries < 3) continue; \
+            else { diag_append("SEND failed\n"); goto done; } \
+        } \
+        diag_append("C: %s", sptr); \
+    } while (0)
 
     /* Sanitise header fields only (config / device-name supplied, must not inject
      * CRLF). The body is sent raw in a separate SEND() below so its \r\n line
@@ -167,12 +341,30 @@ static bool smtp_send(const notify_cfg_t *c, const char *subject, const char *bo
     sanitize_line(c->email_to, rcpt, sizeof(rcpt));
     sanitize_line(subject, subj, sizeof(subj));
 
-    RECV();
-    SEND("EHLO heating\r\n"); RECV();
+    RECV();                                            /* server greeting 220 */
+    SEND("EHLO heating\r\n"); RECV();                  /* EHLO reply (multi-line) */
+    /* Opportunistic STARTTLS: if the server advertised it, upgrade now. */
+    if (strstr(rx, "STARTTLS")) {
+        diag_append("STARTTLS advertised, upgrading...\n");
+        SEND("STARTTLS\r\n"); RECV();                  /* expect 220 ready */
+        tls_init = true;   /* smtp_starttls inits all four ctxs before it can fail */
+        if (!smtp_starttls(&conn, host, &tls_conf, &tls_entropy, &tls_ctr)) { goto done; }
+        conn.tls = true;
+        diag_append("TLS session established\n");
+        SEND("EHLO heating\r\n"); RECV();              /* re-EHLO required post-TLS */
+    }
     if (c->smtp_user[0] && c->smtp_pass[0]) {
-        SEND("AUTH LOGIN\r\n"); RECV();
-        SEND(b64(c->smtp_user, b64buf, sizeof(b64buf))); SEND("\r\n"); RECV();
-        SEND(b64(c->smtp_pass, b64buf, sizeof(b64buf))); SEND("\r\n"); RECV();
+        /* SASL PLAIN, single-line initial-response form:
+         * AUTH PLAIN base64( authzid \0 authcid \0 passwd ), authzid empty.
+         * Postfix negotiates PLAIN with Brevo successfully; we match it. */
+        char sasl[96];
+        size_t sl = 0;
+        sasl[sl++] = '\0';
+        for (const char *p = c->smtp_user; *p && sl < sizeof(sasl) - 1; p++) sasl[sl++] = *p;
+        sasl[sl++] = '\0';
+        for (const char *p = c->smtp_pass; *p && sl < sizeof(sasl); p++) sasl[sl++] = *p;
+        snprintf(tx, sizeof(tx), "AUTH PLAIN %s\r\n", b64n(sasl, sl, b64buf, sizeof(b64buf)));
+        SEND(tx); RECV();
     }
     snprintf(tx, sizeof(tx), "MAIL FROM:<heating@esp32.local>\r\n"); SEND(tx); RECV();
     snprintf(tx, sizeof(tx), "RCPT TO:<%s>\r\n", rcpt); SEND(tx); RECV();
@@ -185,13 +377,26 @@ static bool smtp_send(const notify_cfg_t *c, const char *subject, const char *bo
     if (body && body[0]) SEND(body);
     SEND("\r\n.\r\n"); RECV();
     SEND("QUIT\r\n");
+    if (conn.tls) mbedtls_ssl_close_notify(&ssl);
     close(sock);
     diag_append("OK: email accepted by server\n");
     ESP_LOGI(TAG, "email sent to %s: %s", rcpt, subj);
+    if (tls_init) {
+        mbedtls_ssl_free(&ssl);
+        mbedtls_ssl_config_free(&tls_conf);
+        mbedtls_ctr_drbg_free(&tls_ctr);
+        mbedtls_entropy_free(&tls_entropy);
+    }
     return true;
 done:
     close(sock);
     diag_append("FAIL: SMTP transaction incomplete\n");
+    if (tls_init) {
+        mbedtls_ssl_free(&ssl);
+        mbedtls_ssl_config_free(&tls_conf);
+        mbedtls_ctr_drbg_free(&tls_ctr);
+        mbedtls_entropy_free(&tls_entropy);
+    }
     return false;
 #undef RECV
 #undef SEND
@@ -260,9 +465,9 @@ static void notify_worker_task(void *arg)
                 cmd.u.restart.sys_temp, cmd.u.restart.ext_temp,
                 cmd.u.restart.healthy, cmd.u.restart.total,
                 cmd.u.restart.sensors, cmd.u.restart.sensor_count,
-                cmd.u.restart.has_external);
+                cmd.u.restart.has_external, cmd.smtp_port);
         } else { /* NOTIFY_ALERT */
-            notification_send_alert(&cmd.cfg, cmd.u.alert.fault, cmd.u.alert.message);
+            notification_send_alert(&cmd.cfg, cmd.u.alert.fault, cmd.u.alert.message, cmd.smtp_port);
         }
     }
 }
@@ -286,12 +491,13 @@ void notification_init(void)
 }
 
 void notification_dispatch_alert(const notify_cfg_t *cfg, fault_class_t f,
-                                 const char *message)
+                                 const char *message, int smtp_port)
 {
     if (!s_notify_queue || !cfg || !message) return;
     notify_cmd_t cmd = {0};
     cmd.kind = NOTIFY_ALERT;
     cmd.cfg = *cfg;
+    cmd.smtp_port = smtp_port;
     cmd.u.alert.fault = f;
     strncpy(cmd.u.alert.message, message, sizeof(cmd.u.alert.message) - 1);
     if (xQueueSend(s_notify_queue, &cmd, 0) != pdPASS)
@@ -300,13 +506,14 @@ void notification_dispatch_alert(const notify_cfg_t *cfg, fault_class_t f,
 
 void notification_dispatch_restart(const notify_cfg_t *cfg, const char *device_name,
     float sys_temp, float ext_temp, int healthy, int total,
-    const sensor_t *sensors, int sensor_count, bool has_external)
+    const sensor_t *sensors, int sensor_count, bool has_external, int smtp_port)
 {
     if (!s_notify_queue || !cfg || !device_name || !sensors) return;
     if (!cfg->email_enabled && !cfg->sms_enabled) return;
     notify_cmd_t cmd = {0};
     cmd.kind = NOTIFY_RESTART;
     cmd.cfg = *cfg;
+    cmd.smtp_port = smtp_port;
     notify_restart_t *r = &cmd.u.restart;
     strncpy(r->device_name, device_name, sizeof(r->device_name) - 1);
     r->sys_temp = sys_temp;
@@ -325,14 +532,14 @@ void notification_dispatch_restart(const notify_cfg_t *cfg, const char *device_n
 }
 
 void notification_send_alert(const notify_cfg_t *cfg, fault_class_t f,
-                             const char *message)
+                             const char *message, int smtp_port)
 {
     if (!cfg || !message) return;
     char subject[64];
     snprintf(subject, sizeof(subject), "[Heating] fault %d", (int)f);
     s_diag[0] = '\0'; s_diag_len = 0;
     if (cfg->email_enabled && cfg->email_to[0]) {
-        if (!smtp_send(cfg, subject, message))
+        if (!smtp_send(cfg, smtp_port, subject, message))
             ESP_LOGW(TAG, "email send failed");
     }
     if (cfg->sms_enabled && cfg->sms_phone[0]) {
@@ -343,7 +550,7 @@ void notification_send_alert(const notify_cfg_t *cfg, fault_class_t f,
 
 void notification_send_restart(const notify_cfg_t *cfg, const char *device_name,
     float sys_temp, float ext_temp, int healthy, int total,
-    const sensor_t *sensors, int sensor_count, bool has_external)
+    const sensor_t *sensors, int sensor_count, bool has_external, int smtp_port)
 {
     if (!cfg || !device_name || !sensors) return;
     if (!cfg->email_enabled && !cfg->sms_enabled) return;
@@ -405,7 +612,7 @@ void notification_send_restart(const notify_cfg_t *cfg, const char *device_name,
     s_diag[0] = '\0'; s_diag_len = 0;
 
     if (cfg->email_enabled && cfg->email_to[0]) {
-        if (!smtp_send(cfg, subject, body))
+        if (!smtp_send(cfg, smtp_port, subject, body))
             ESP_LOGW(TAG, "restart email failed");
     }
     if (cfg->sms_enabled && cfg->sms_phone[0]) {
@@ -416,12 +623,12 @@ void notification_send_restart(const notify_cfg_t *cfg, const char *device_name,
     }
 }
 
-char *notification_test_email(const notify_cfg_t *cfg)
+char *notification_test_email(const notify_cfg_t *cfg, int smtp_port)
 {
     if (!cfg || !cfg->smtp_host[0]) return strdup("FAIL: brak serwera SMTP w konfiguracji");
     if (!cfg->email_to[0]) return strdup("FAIL: brak adresu odbiorcy (email_to)");
     s_diag[0] = '\0'; s_diag_len = 0;
-    bool ok = smtp_send(cfg, "[Heating] TEST", "Testowy e-mail z kontrolera ogrzewania ESP32.");
+    bool ok = smtp_send(cfg, smtp_port, "[Heating] TEST", "Testowy e-mail z kontrolera ogrzewania ESP32.");
     /* s_diag already filled by smtp_send; return a copy. */
     size_t len = strlen(s_diag);
     if (len == 0) return strdup(ok ? "OK (brak szczegolow)" : "FAIL (brak szczegolow)");

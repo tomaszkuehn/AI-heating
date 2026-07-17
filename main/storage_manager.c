@@ -24,7 +24,6 @@ static const char *TAG = "storage";
 #define NVS_FS_WR    "fs_writes"     /* cumulative KB to LittleFS     */
 #define FS_MOUNT     "/storage"
 #define FS_SAMPLES   FS_MOUNT "/samples"
-#define FS_LOG_F     FS_MOUNT "/events.log"
 #define FS_DAILY     FS_MOUNT "/daily.csv"
 
 /* ESP32 NOR flash endurance parameters (W25Q32 / similar). */
@@ -35,6 +34,18 @@ static const char *TAG = "storage";
 static SemaphoreHandle_t s_fs_mutex = NULL;
 static bool s_healthy = false;
 static bool s_lfs_ok = false;
+
+/* Decouples wear-counter persistence from LittleFS write volume: the RAM total
+ * is flushed to NVS at most once per hour (plus on config save), so a busy
+ * logger cannot trigger NVS erases proportionally to its own activity. */
+#define WEAR_SAVE_PERIOD_US   (3600ULL * 1000 * 1000)   /* 1 hour */
+static esp_timer_handle_t s_wear_timer = NULL;
+static void save_wear_counters(void);   /* forward decl: defined further below */
+static void wear_timer_cb(void *arg)
+{
+    (void)arg;
+    save_wear_counters();
+}
 
 /* ---- RAM ring buffer (replaces file-based minute-sample storage) ---- */
 static minute_sample_t s_ring[HE_RING_SIZE];
@@ -72,24 +83,36 @@ static void load_wear_counters(void)
 
 static void save_wear_counters(void)
 {
+    /* nvs_open/commit are not safe to call from an ISR; the wear timer runs in a
+     * timer task (not ISR), but guard with the mutex anyway since
+     * storage_save_config may run concurrently from the web task. */
+    if (s_fs_mutex) xSemaphoreTake(s_fs_mutex, portMAX_DELAY);
     nvs_handle_t h;
-    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
+        if (s_fs_mutex) xSemaphoreGive(s_fs_mutex);
+        return;
+    }
     nvs_set_blob(h, NVS_NVS_WR, &s_nvs_writes, sizeof(s_nvs_writes));
     nvs_set_blob(h, NVS_FS_WR, &s_fs_kb, sizeof(s_fs_kb));
     nvs_commit(h);
     nvs_close(h);
+    if (s_fs_mutex) xSemaphoreGive(s_fs_mutex);
 }
 
-/* Track LittleFS bytes written: call after every fwrite. */
+/* Track LittleFS bytes written: call after every fwrite. Only accumulates the
+ * running total in RAM -- it deliberately does NOT persist to NVS here. An early
+ * version committed the wear counters to NVS on every 1 KB written, which meant
+ * any LittleFS write triggered an NVS erase; that is a feedback loop that
+ * accelerates flash wear in proportion to logging activity. The RAM total is
+ * flushed to NVS at most once per hour by the wear-timer (and on config save),
+ * so NVS commits are decoupled from LittleFS write volume. */
 static void account_fs_write(size_t bytes)
 {
-    /* Round up to KB granularity (avoid thrashing the counter on tiny writes). */
     static size_t accum = 0;
     accum += bytes;
     if (accum >= 1024) {
         s_fs_kb += (uint32_t)(accum / 1024);
         accum %= 1024;
-        save_wear_counters();
     }
 }
 
@@ -121,6 +144,14 @@ esp_err_t storage_init(void)
     s_fs_mutex = xSemaphoreCreateMutex();
     s_healthy = true;
     load_wear_counters();
+    /* Flush the RAM wear counters to NVS at most once per hour, decoupled from
+     * LittleFS write volume (see account_fs_write). The timer task owns this. */
+    const esp_timer_create_args_t tc = {
+        .callback = wear_timer_cb,
+        .name = "wear_save",
+    };
+    if (esp_timer_create(&tc, &s_wear_timer) == ESP_OK)
+        esp_timer_start_periodic(s_wear_timer, WEAR_SAVE_PERIOD_US);
     ESP_LOGI(TAG, "Wear counters: NVS=%lu commits, FS=%lu KB",
              (unsigned long)s_nvs_writes, (unsigned long)s_fs_kb);
     /* Collapse any duplicate / out-of-order rows that older firmware wrote to
@@ -508,95 +539,64 @@ esp_err_t storage_read_daily_aggregates(int months, minute_sample_t *out,
     return ESP_OK;
 }
 
-/* ---- Event / alarm log (rate-limited) ---- */
+/* ---- Event / alarm log (in-RAM ring buffer) ---- */
+/* The event log is short-lived operational history (restarts, faults) shown in
+ * the UI; it does NOT need to survive a reboot. Keeping it in RAM instead of
+ * LittleFS eliminates all flash writes for logging -- important because the
+ * previous file-backed design appended on every event (and compacted on
+ * overflow), which both wore flash and risked a write-storm if an event fired
+ * inside a boot loop. The ring holds the most recent HE_LOG_MAX_ENTRIES events;
+ * older ones age out silently. */
+#define HE_LOG_MAX_ENTRIES   100
 
-/* Keep events.log bounded: when it exceeds the cap, retain only the most recent
- * half (aligned to a line boundary) so old events age out instead of filling
- * flash. Caller must hold s_fs_mutex. Buffer lives in BSS (too big for stack). */
-static char s_compact_buf[HE_LOG_MAX_BYTES / 2 + 1];
-
-static void compact_log_tail(void)
-{
-    FILE *f = fopen(FS_LOG_F, "r");
-    if (!f) return;
-    long keep = HE_LOG_MAX_BYTES / 2;
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    if (size <= keep) { fclose(f); return; }
-    fseek(f, size - keep, SEEK_SET);
-    size_t n = fread(s_compact_buf, 1, (size_t)keep, f);
-    fclose(f);
-    /* Skip a partial first line so only whole records survive. */
-    size_t start = 0;
-    while (start < n && s_compact_buf[start] != '\n') start++;
-    if (start < n) start++;
-    FILE *w = fopen(FS_LOG_F ".tmp", "w");
-    if (!w) return;
-    size_t wr = fwrite(s_compact_buf + start, 1, n - start, w);
-    fclose(w);
-    remove(FS_LOG_F);
-    rename(FS_LOG_F ".tmp", FS_LOG_F);
-    if (wr > 0) account_fs_write(wr);
-    ESP_LOGI(TAG, "events.log compacted (%ld -> %u bytes)", size, (unsigned)(n - start));
-}
+static log_entry_t s_log_ring[HE_LOG_MAX_ENTRIES];
+static int s_log_head = 0;     /* next write slot */
+static int s_log_count = 0;    /* total valid (0..HE_LOG_MAX_ENTRIES) */
 
 esp_err_t storage_log_event(fault_class_t f, int severity, const char *text)
 {
-    if (!s_lfs_ok || !text) return ESP_FAIL;
+    if (!text) return ESP_FAIL;
     xSemaphoreTake(s_fs_mutex, portMAX_DELAY);
-    struct stat st;
-    if (stat(FS_LOG_F, &st) == 0 && st.st_size > HE_LOG_MAX_BYTES)
-        compact_log_tail();
-    FILE *flog = fopen(FS_LOG_F, "a");
-    if (!flog) { xSemaphoreGive(s_fs_mutex); return ESP_FAIL; }
-    int w = fprintf(flog, "%ld,%u,%u,%s\n", (long)time(NULL), (unsigned)f,
-                    (unsigned)severity, text);
-    fclose(flog);
-    if (w > 0) account_fs_write((size_t)w);
+    log_entry_t *e = &s_log_ring[s_log_head];
+    e->ts = (int32_t)time(NULL);
+    e->fault = (uint8_t)f;
+    e->severity = (uint8_t)severity;
+    strncpy(e->text, text, sizeof(e->text) - 1);
+    e->text[sizeof(e->text) - 1] = '\0';
+    char *nl = strchr(e->text, '\n'); if (nl) *nl = '\0';
+    s_log_head = (s_log_head + 1) % HE_LOG_MAX_ENTRIES;
+    if (s_log_count < HE_LOG_MAX_ENTRIES) s_log_count++;
     xSemaphoreGive(s_fs_mutex);
     return ESP_OK;
 }
 
 esp_err_t storage_read_log(log_entry_t *out, int max, int *count)
 {
-    if (!s_lfs_ok || !out || !count) return ESP_FAIL;
+    if (!out || !count) return ESP_FAIL;
     *count = 0;
     xSemaphoreTake(s_fs_mutex, portMAX_DELAY);
-    FILE *f = fopen(FS_LOG_F, "r");
-    if (!f) { xSemaphoreGive(s_fs_mutex); return ESP_OK; }
-    char line[160]; int total = 0;
-    while (fgets(line, sizeof(line), f)) total++;
-    rewind(f);
-    int skip = total - max; if (skip < 0) skip = 0;
-    int idx = 0;
-    while (fgets(line, sizeof(line), f)) {
-        if (idx++ < skip) continue;
-        if (*count >= max) break;
-        log_entry_t *e = &out[*count];
-        char *p = line;
-        e->ts = (int32_t)strtol(p, &p, 10); if (*p == ',') p++;
-        e->fault = (fault_class_t)strtol(p, &p, 10); if (*p == ',') p++;
-        e->severity = (uint8_t)strtol(p, &p, 10); if (*p == ',') p++;
-        strncpy(e->text, p, sizeof(e->text) - 1);
-        e->text[sizeof(e->text) - 1] = '\0';
-        /* strip newline */
-        char *nl = strchr(e->text, '\n'); if (nl) *nl = '\0';
-        (*count)++;
+    /* Oldest entry is at (head - count + ENTRIES) % ENTRIES; emit the most
+     * recent `max` of them in chronological order. */
+    int start = s_log_head - s_log_count;
+    if (start < 0) start += HE_LOG_MAX_ENTRIES;
+    int avail = s_log_count;
+    int skip = avail - max; if (skip < 0) skip = 0;
+    for (int i = skip; i < avail && *count < max; i++) {
+        int idx = (start + i) % HE_LOG_MAX_ENTRIES;
+        out[(*count)++] = s_log_ring[idx];
     }
-    fclose(f);
     xSemaphoreGive(s_fs_mutex);
     return ESP_OK;
 }
 
-/* Empty the event/alarm log (deletes events.log). Used by the "Wyczyść" UI button so
- * accumulated test/stale entries can be wiped without a reflash. The next
- * storage_log_event recreates the file. */
+/* Empty the event/alarm log. In-RAM now, so this just resets the ring (no flash
+ * erase). Used by the "Wyczyść" UI button. */
 esp_err_t storage_clear_log(void)
 {
-    if (!s_lfs_ok) return ESP_FAIL;
     xSemaphoreTake(s_fs_mutex, portMAX_DELAY);
-    remove(FS_LOG_F);
+    s_log_head = 0;
+    s_log_count = 0;
     xSemaphoreGive(s_fs_mutex);
-    ESP_LOGI(TAG, "events.log cleared");
+    ESP_LOGI(TAG, "events log cleared (RAM)");
     return ESP_OK;
 }

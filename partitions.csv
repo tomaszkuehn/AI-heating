@@ -3,8 +3,13 @@
 nvs,        data, nvs,     0x9000,   0x6000,
 # PHY calibration data.
 phy_init,   data, phy,     0xf000,   0x1000,
-# Application firmware.
-factory,    app,  factory, 0x10000,  1M,
+# Application firmware. Enlarged to 1.5M to fit the mbedTLS STARTTLS SMTP path
+# (the plain 1M partition overflowed by ~11.5 KB once TLS was linked in). The
+# 4 MB flash has ample room; storage follows at the auto-computed offset.
+factory,    app,  factory, 0x10000,  0x180000,
 # LittleFS: user files, daily profiles, configuration exports, history & logs.
 # Subtype spiffs (0x82) is reused; the littlefs component mounts by label.
-storage,    data, spiffs,  ,         0xF0000,
+# Enlarged from 0xF0000 to fill the entire 4 MB flash tail (0x190000 .. 0x400000,
+# ~2.4 MB) -- the earlier 960 KB left 1.5 MB of flash unused. More room for
+# history/logs/config exports. End offset 0x400000 == end of flash.
+storage,    data, spiffs,  ,         0x270000,

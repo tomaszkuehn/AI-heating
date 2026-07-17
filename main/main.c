@@ -70,6 +70,7 @@ static void seed_defaults(system_config_t *c)
     c->min_on_sec = HE_DEFAULT_MIN_ON_SEC;
     c->min_off_sec = HE_DEFAULT_MIN_OFF_SEC;
     c->anti_osc_lock_sec = HE_DEFAULT_ANTIOSC_LOCK_SEC;
+    c->smtp_port = HE_DEFAULT_SMTP_PORT;
     strncpy(c->device_name, HE_DEFAULT_DEVICE_NAME, sizeof(c->device_name) - 1);
     c->wifi_sta_mode = false;
     strncpy(c->wifi_ssid, HE_DEFAULT_AP_SSID, sizeof(c->wifi_ssid) - 1);
@@ -105,6 +106,10 @@ static void repair_config(system_config_t *c)
         c->min_off_sec = HE_DEFAULT_MIN_OFF_SEC;
     if (c->anti_osc_lock_sec < HE_ANTIOSC_FLOOR || c->anti_osc_lock_sec > 600)
         c->anti_osc_lock_sec = HE_DEFAULT_ANTIOSC_LOCK_SEC;
+    /* Dedicated SMTP port: an upgraded device zero-fills this tail field to 0,
+     * which means "use host:port or default 25", so the only repair needed is to
+     * treat out-of-range values as the default. */
+    if (c->smtp_port < 1 || c->smtp_port > 65535) c->smtp_port = HE_DEFAULT_SMTP_PORT;
     if (c->device_name[0] == '\0') {
         strncpy(c->device_name, HE_DEFAULT_DEVICE_NAME, sizeof(c->device_name) - 1);
         c->device_name[sizeof(c->device_name) - 1] = '\0';

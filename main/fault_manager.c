@@ -76,7 +76,7 @@ static void raise_fault(fault_class_t f, const char *text)
      * dispatch is off-loop and one-shot per fault lifecycle (s_notified resets on
      * clear), so a re-raise after recovery+failure fires a fresh notification. */
     if (s_cfg && !s_notified && s_cfg->notify_ev_faults) {
-        notification_dispatch_alert(&s_cfg->notify, f, text);
+        notification_dispatch_alert(&s_cfg->notify, f, text, s_cfg->smtp_port);
         s_notified = true;
     }
 }
